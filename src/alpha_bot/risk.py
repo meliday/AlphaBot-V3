@@ -1,3 +1,14 @@
+"""ATR-based trade-plan construction (stop-loss, targets, R/R ratio).
+
+Methodology:
+  * Stop-loss is the wider of (2×ATR below close) and (structural floor
+    below the 20-day low / 50-day SMA), bounded to [2.5%, 7%] of price
+    per Minervini's "Trade Like a Stock Market Wizard".
+  * Target-1 is chart resistance (if meaningfully above close) or a
+    half-base measured move for post-breakout setups.
+  * Target-2 is a full-base extension or +10% above Target-1.
+"""
+
 from __future__ import annotations
 
 import math

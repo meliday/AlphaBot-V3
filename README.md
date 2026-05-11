@@ -296,8 +296,7 @@ src/alpha_bot/
 ├── models.py            Core dataclasses (Candle, OrderRequest, TradePlan, …)
 ├── config.py            config.yaml + .env loader (no PyYAML dependency)
 ├── runner.py            CLI entry point (bot commands)
-├── auto.py              Auto-Pilot pipeline (orchestrator + position manager)
-├── risk.py              ATR-based stop-loss, target calculation, position sizing
+├── risk.py              ATR-based stop-loss, target calculation
 ├── backtest.py          Walk-forward backtester (gap-aware, Sharpe, MDD)
 ├── market_regime.py     Market-wide regime filter, 6h cache
 ├── market_hours.py      KR/US exchange schedule + holiday gate
@@ -305,8 +304,20 @@ src/alpha_bot/
 ├── daily_report.py      Daily activity aggregation from audit logs
 ├── errors.py            Exception hierarchy (BotError → Data/Strategy/Broker/Approval)
 ├── utils.py             Shared helpers (market validation, exchange code inference)
-├── web.py               Web dashboard server (port 8501, stdlib http.server)
-├── gui.py               Tkinter desktop GUI
+├── gui.py               Tkinter desktop GUI launcher
+├── auto/                Auto-Pilot pipeline
+│   ├── analysis.py      One-shot analysis + provider/broker factories
+│   ├── orchestrator.py  Watchlist scan loop, cooldown, regime gate
+│   ├── position_manager.py  Stop/target monitoring, reconciliation, force-exit
+│   └── sizing.py        ATR-based position sizing from account balance
+├── web/                 Web dashboard (port 8501, stdlib http.server)
+│   ├── server.py        DashboardHandler routing + entry point
+│   ├── autopilot_state.py  Thread-safe auto-pilot state + background loop
+│   ├── handlers_analysis.py  Analyze, scan, backtest, queue endpoints
+│   ├── handlers_orders.py    Order list, approve, sync endpoints
+│   ├── handlers_portfolio.py Portfolio, bot holdings, bot stats endpoints
+│   ├── handlers_mock.py      Mock broker simulation endpoints
+│   └── handlers_config.py    Settings, watchlist, account, logs, FX endpoints
 ├── strategy/
 │   ├── analyzer.py      StrategyAnalyzer — CANSLIM + VCP scoring engine
 │   └── indicators.py    Pure functions: SMA, RSI, ATR, Bollinger, VCP detection

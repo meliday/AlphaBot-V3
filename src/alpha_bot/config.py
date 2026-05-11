@@ -1,3 +1,14 @@
+"""Application configuration loader (zero external dependencies).
+
+Reads ``config.yaml`` using a simple ``key: value`` parser (no PyYAML
+required) and ```.env`` via line-by-line parsing. Secrets (KIS keys,
+OpenAI key) are loaded from environment variables / .env and never
+stored in the config dataclass.
+
+The ``load_watchlist`` helper supports both YAML-style ``universe:``
+lists and flat JSON arrays.
+"""
+
 from __future__ import annotations
 
 import os
