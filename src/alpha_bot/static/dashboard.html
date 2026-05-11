@@ -1,0 +1,2729 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AlphaBot · 토스 스타일 트레이딩 대시보드</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" />
+<script src="https://unpkg.com/@phosphor-icons/web"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        fontFamily: { sans: ['Pretendard', 'sans-serif'] },
+        colors: {
+          bg:       '#f4f6f8',
+          card:     '#ffffff',
+          text:     '#191f28',
+          subtext:  '#6b7684',
+          mute:     '#8b95a1',
+          border:   '#e5e8eb',
+          tossblue: '#3182f6',
+          blueDark: '#1b64da',
+          blueSoft: '#e8f3ff',
+          rise:     '#f04452',
+          riseSoft: '#fceced',
+          fall:     '#3182f6',
+          fallSoft: '#e8f3ff',
+          warn:     '#f59e0b',
+          warnSoft: '#fef3c7',
+          good:     '#10b981',
+          goodSoft: '#d1fae5',
+          dim:      '#f2f4f6',
+        },
+        borderRadius: { 'toss': '20px', 'toss-sm': '12px', 'toss-xs': '8px' },
+        boxShadow: {
+          'toss':    '0 1px 4px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.04)',
+          'tossLg':  '0 8px 32px rgba(0,0,0,0.08)',
+        }
+      }
+    }
+  };
+</script>
+<style>
+  body { background: #f4f6f8; color: #191f28; -webkit-font-smoothing: antialiased; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-thumb { background: #d1d6db; border-radius: 3px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+
+  .input { background:#f2f4f6; transition: all .15s; border:0; }
+  .input:focus { background:#fff; box-shadow: inset 0 0 0 2px #3182f6; outline: none; }
+
+  .chip { display:inline-flex; align-items:center; gap:4px; padding:4px 10px; border-radius:999px; font-size:12px; font-weight:600; }
+  .btn  { display:inline-flex; align-items:center; justify-content:center; gap:6px; padding:12px 18px; border-radius:12px; font-weight:700; transition:all .15s; cursor:pointer; }
+  .btn-primary { background:#3182f6; color:#fff; }
+  .btn-primary:hover { background:#1b64da; }
+  .btn-primary:disabled { background:#dbe1e7; color:#8b95a1; cursor:not-allowed; }
+  .btn-ghost { background:#f2f4f6; color:#191f28; }
+  .btn-ghost:hover { background:#e5e8eb; }
+  .btn-danger { background:#fceced; color:#f04452; }
+  .btn-danger:hover { background:#f9d8db; }
+
+  .card { background:#fff; border-radius:20px; padding:24px; box-shadow: 0 1px 4px rgba(0,0,0,.04), 0 4px 16px rgba(0,0,0,.04); }
+  .card-sm { background:#fff; border-radius:16px; padding:18px; box-shadow: 0 1px 4px rgba(0,0,0,.04); }
+
+  .fade-in { animation: fadeIn .35s cubic-bezier(0.16, 1, 0.3, 1); }
+  @keyframes fadeIn { from { opacity:0; transform: translateY(8px); } to { opacity:1; transform: none; } }
+  .pop { animation: pop .4s cubic-bezier(0.16, 1, 0.3, 1); }
+  @keyframes pop { 0% { transform: scale(.96); opacity:0; } 100% { transform: none; opacity:1; } }
+
+  .bar { height:8px; background:#f2f4f6; border-radius:999px; overflow:hidden; }
+  .bar > div { height:100%; background: linear-gradient(90deg,#3182f6,#5ea5ff); border-radius:999px; transition: width .6s cubic-bezier(.16,1,.3,1); }
+
+  .nav-link { padding:8px 12px; border-radius:8px; font-weight:600; color:#6b7684; transition: all .15s; cursor:pointer; }
+  .nav-link:hover { background:#f2f4f6; color:#191f28; }
+  .nav-link.active { background:#e8f3ff; color:#3182f6; }
+
+  .skeleton { background: linear-gradient(90deg, #eef0f3 25%, #f7f8fa 50%, #eef0f3 75%); background-size: 200% 100%; animation: skel 1.4s infinite; border-radius: 12px; }
+  @keyframes skel { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+  /* Terminal */
+  .term { background:#0f1419; color:#cdd9e5; font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; font-size:13px; }
+  .term .ts { color:#5c6773; margin-right:8px; }
+
+  /* Trade ladder */
+  .ladder { position:relative; height:106px; }
+  .ladder .axis { position:absolute; left:0; right:0; top:52px; height:6px; border-radius:3px; opacity:.25; }
+  .ladder .marker { position:absolute; transform: translate(-50%, -50%); text-align:center; top: 55px; }
+  .ladder .marker .dot { width:14px; height:14px; border-radius:999px; margin: 0 auto; position: relative; z-index: 2; box-shadow: 0 0 0 2px #fff; }
+  .ladder .marker .lbl { font-size:11px; color:#8b95a1; font-weight:600; white-space:nowrap; position: absolute; left: 50%; transform: translateX(-50%); }
+  .ladder .marker .px { font-size:11px; color:#191f28; font-weight:700; white-space:nowrap; position: absolute; left: 50%; transform: translateX(-50%); }
+
+  /* Donut for RSI */
+  .donut { transform: rotate(-90deg); }
+  .donut circle { fill: none; }
+
+  /* ── Mission Control ──────────────────────────────────── */
+  .mc-hero {
+    background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0c4a6e 100%);
+    color: #f1f5f9;
+    box-shadow: 0 8px 32px rgba(15, 23, 42, 0.25), inset 0 1px 0 rgba(255,255,255,0.08);
+  }
+  .mc-hero .text-subtext { color: #94a3b8; }
+  .mc-grid-bg {
+    background-image:
+      linear-gradient(rgba(56, 189, 248, 0.08) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(56, 189, 248, 0.08) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+  .mc-pulse-wrap {
+    width: 48px; height: 48px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 999px;
+    background: rgba(15, 23, 42, 0.5);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08);
+  }
+  .mc-pulse-dot {
+    width: 14px; height: 14px; border-radius: 999px;
+    display: block; position: relative;
+  }
+  .mc-pulse-dot::before {
+    content: ''; position: absolute; inset: -6px; border-radius: 999px;
+    animation: mc-pulse 1.6s ease-out infinite;
+  }
+  .mc-pulse-idle    { background: #64748b; }
+  .mc-pulse-idle::before { background: rgba(100, 116, 139, 0.4); }
+  .mc-pulse-active  { background: #22c55e; box-shadow: 0 0 12px rgba(34, 197, 94, 0.6); }
+  .mc-pulse-active::before { background: rgba(34, 197, 94, 0.4); }
+  .mc-pulse-warn    { background: #f59e0b; }
+  .mc-pulse-warn::before { background: rgba(245, 158, 11, 0.4); }
+  @keyframes mc-pulse {
+    0%   { transform: scale(0.8); opacity: 0.7; }
+    100% { transform: scale(2.2); opacity: 0; }
+  }
+
+  .mc-kpi {
+    background: #fff;
+    border-radius: 16px;
+    padding: 16px 18px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.05), 0 4px 12px rgba(0,0,0,.04);
+    transition: transform 0.15s ease;
+  }
+  .mc-kpi:hover { transform: translateY(-2px); }
+  .mc-kpi-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: #8b95a1; font-weight: 700; }
+  .mc-kpi-val   { font-size: 32px; font-weight: 800; line-height: 1.1; margin-top: 4px; font-feature-settings: "tnum"; }
+  .mc-kpi-foot  { font-size: 11px; color: #b0b8c1; margin-top: 4px; }
+
+  .mc-feed {
+    background: #0f172a;
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0,0,0,.06);
+  }
+  .mc-feed-body {
+    padding: 16px 20px;
+    height: 320px;
+    overflow-y: auto;
+    font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+    font-size: 12.5px;
+    color: #cdd9e5;
+  }
+  .mc-feed-body > div { padding: 3px 0; line-height: 1.55; }
+  .mc-feed-body .ts { color: #475569; margin-right: 10px; }
+  .mc-feed-empty {
+    text-align: center; padding: 60px 20px;
+    color: #475569 !important; font-family: inherit !important;
+  }
+
+  .mc-drawer {
+    background: #fff;
+    border-radius: 16px;
+    border: 1px solid #eef0f3;
+    overflow: hidden;
+  }
+  .mc-drawer-summary {
+    padding: 14px 20px;
+    cursor: pointer;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-weight: 700;
+    user-select: none;
+    transition: background 0.15s;
+  }
+  .mc-drawer-summary:hover { background: #f8f9fb; }
+  .mc-drawer-summary::-webkit-details-marker { display: none; }
+  .mc-drawer[open] .mc-drawer-summary { border-bottom: 1px solid #eef0f3; }
+  .mc-drawer-body { padding: 20px; }
+
+  .mc-position {
+    background: #fff;
+    border-radius: 14px;
+    padding: 16px 18px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.06), 0 4px 12px rgba(0,0,0,.04);
+    transition: box-shadow 0.15s;
+  }
+  .mc-position:hover { box-shadow: 0 2px 6px rgba(0,0,0,.08), 0 8px 20px rgba(0,0,0,.06); }
+  .mc-bar {
+    position: relative; height: 8px; background: #f1f5f9;
+    border-radius: 999px; overflow: hidden; margin-top: 4px;
+  }
+  .mc-bar-fill {
+    position: absolute; left: 0; top: 0; height: 100%;
+    background: linear-gradient(90deg, #ef4444 0%, #f59e0b 50%, #22c55e 100%);
+    border-radius: 999px; opacity: 0.35;
+    width: 100%;
+  }
+  .mc-bar-marker {
+    position: absolute; top: 50%; transform: translate(-50%, -50%);
+    width: 16px; height: 16px; border-radius: 999px;
+    background: #1e293b; box-shadow: 0 0 0 3px #fff, 0 2px 6px rgba(0,0,0,.2);
+  }
+</style>
+</head>
+<body class="min-h-screen">
+
+<!-- ─── Top Nav ─────────────────────────────────────────────── -->
+<nav class="sticky top-0 z-40 bg-white/85 backdrop-blur-md border-b border-border">
+  <div class="max-w-screen-lg mx-auto px-6 h-14 flex items-center justify-between">
+    <div class="flex items-center gap-2 cursor-pointer" onclick="go('analyze')">
+      <i class="ph-fill ph-trend-up text-tossblue text-2xl"></i>
+      <span class="font-extrabold tracking-tight text-lg">AlphaBot</span>
+    </div>
+    <div class="flex items-center gap-1 text-sm">
+      <a class="nav-link active" data-tab="analyze" onclick="go('analyze')"><i class="ph ph-magnifying-glass"></i> 분석</a>
+      <a class="nav-link" data-tab="scan" onclick="go('scan')"><i class="ph ph-list-magnifying-glass"></i> 관심종목</a>
+      <a class="nav-link" data-tab="portfolio" onclick="go('portfolio')"><i class="ph ph-chart-line-up"></i> 포트폴리오</a>
+      <a class="nav-link" data-tab="auto" onclick="go('auto')"><i class="ph ph-robot"></i> 자동매매</a>
+      <a class="nav-link" data-tab="mock" onclick="go('mock')"><i class="ph ph-flask"></i> Mock 시뮬</a>
+      <a class="nav-link" data-tab="account" onclick="go('account')"><i class="ph ph-wallet"></i> 계좌</a>
+      <a class="nav-link" data-tab="orders" onclick="go('orders')"><i class="ph ph-receipt"></i> 주문</a>
+      <a class="nav-link" data-tab="logs" onclick="go('logs')"><i class="ph ph-scroll"></i> 로그</a>
+      <a class="nav-link" data-tab="settings" onclick="go('settings')"><i class="ph ph-gear-six"></i> 설정</a>
+    </div>
+  </div>
+</nav>
+
+<main class="max-w-screen-lg mx-auto px-6 py-8 space-y-6">
+
+  <!-- ─── ANALYZE ─────────────────────────────────────────── -->
+  <section id="page-analyze" class="space-y-6 fade-in">
+    <div>
+      <h1 class="text-3xl font-extrabold tracking-tight">어떤 종목을<br>분석할까요?</h1>
+      <p class="text-subtext mt-2">CANSLIM + VCP 룰과 LLM 뉴스 평가를 결합해 매수/관망 신호를 산출합니다.</p>
+    </div>
+
+    <div class="card space-y-4">
+      <div class="flex gap-3">
+        <select id="aMarket" class="input rounded-toss-sm px-4 py-3 font-bold w-32">
+          <option value="US">🇺🇸 미국</option>
+          <option value="KR">🇰🇷 한국</option>
+        </select>
+        <input id="aTicker" placeholder="종목코드 (NVDA, 005930)" class="input rounded-toss-sm px-4 py-3 w-full font-medium" />
+      </div>
+      <div class="grid grid-cols-3 gap-3 text-sm">
+        <label class="flex flex-col gap-1">
+          <span class="text-subtext px-1 text-xs">데이터 소스</span>
+          <select id="aSource" class="input rounded-toss-sm px-3 py-2 font-semibold">
+            <option value="kis" selected>KIS API (실시간)</option>
+            <option value="local">로컬 파일</option>
+          </select>
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-subtext px-1 text-xs">언어</span>
+          <select id="aLang" class="input rounded-toss-sm px-3 py-2 font-semibold">
+            <option value="ko">한국어</option>
+            <option value="en">English</option>
+          </select>
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-subtext px-1 text-xs">LLM 뉴스 분석</span>
+          <select id="aLlm" class="input rounded-toss-sm px-3 py-2 font-semibold">
+            <option value="1">사용 (OpenAI)</option>
+            <option value="0">사용 안함</option>
+          </select>
+        </label>
+      </div>
+      <button id="aRun" class="btn btn-primary w-full text-base"><i class="ph-bold ph-magnifying-glass"></i> 분석 시작</button>
+    </div>
+
+    <!-- Loading -->
+    <div id="aLoading" class="hidden card text-center py-10">
+      <i class="ph ph-circle-notch animate-spin text-3xl text-tossblue"></i>
+      <p class="mt-3 text-subtext font-medium">데이터 + 뉴스 + LLM 분석 중...</p>
+    </div>
+
+    <!-- Result -->
+    <div id="aResult" class="hidden space-y-6 fade-in">
+
+      <!-- Hero -->
+      <div class="card pop">
+        <div class="flex justify-between items-start gap-4">
+          <div>
+            <div class="text-subtext text-xs font-semibold mb-1" id="rMeta">US Market · 2026-05-09</div>
+            <h2 class="text-2xl font-extrabold tracking-tight flex items-center gap-2">
+              <span id="rTicker">NVDA</span>
+              <span id="rCompany" class="text-base font-medium text-subtext">NVIDIA</span>
+            </h2>
+            <div class="mt-3 flex items-center gap-2 flex-wrap">
+              <span id="rSignal" class="chip">신호</span>
+              <span id="rEarnCaution" class="chip hidden bg-warnSoft text-warn">⚠️ 실적 주의</span>
+            </div>
+            <p id="rReason" class="mt-3 text-sm text-text leading-relaxed">매수/관망 사유</p>
+          </div>
+          <div class="text-right shrink-0">
+            <div class="text-subtext text-xs font-medium">현재가</div>
+            <div id="rPrice" class="text-3xl font-extrabold tracking-tight">$0</div>
+            <div id="rRR" class="mt-1 text-xs text-subtext">R/R 0.00 : 1</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Quick metrics + Score -->
+      <div class="grid md:grid-cols-3 gap-4">
+        <div class="card-sm">
+          <div class="text-subtext text-xs font-semibold mb-1">종합 점수</div>
+          <div class="font-extrabold text-2xl"><span id="rScoreTotal">0</span><span class="text-subtext text-sm font-medium"> / 30</span></div>
+          <div class="text-xs text-subtext mt-1" id="rScoreSub">기준 24점 이상</div>
+        </div>
+        <div class="card-sm">
+          <div class="text-subtext text-xs font-semibold mb-1">손익비</div>
+          <div class="font-extrabold text-2xl" id="rRR2">0.0 : 1</div>
+          <div class="text-xs text-subtext mt-1">1차 목표 기준</div>
+        </div>
+        <div class="card-sm">
+          <div class="text-subtext text-xs font-semibold mb-1">VCP 패턴</div>
+          <div class="font-extrabold text-base" id="rVcpName">-</div>
+          <div class="text-xs text-subtext mt-1">스코어 <span id="rVcpScore">0</span>/10</div>
+        </div>
+      </div>
+
+      <!-- Score breakdown -->
+      <div class="card">
+        <div class="flex justify-between items-center mb-4">
+          <h3 class="font-extrabold text-lg tracking-tight">📊 퀀트 스코어보드</h3>
+          <span class="text-xs text-subtext font-medium">각 항목 /10</span>
+        </div>
+        <div class="space-y-4">
+          <div>
+            <div class="flex justify-between text-sm font-semibold mb-1">
+              <span>펀더멘털</span><span><span id="sFundV">0</span> / 10</span>
+            </div>
+            <div class="bar"><div id="sFundBar" style="width:0%"></div></div>
+            <p class="text-xs text-subtext mt-1.5" id="sFundNote">-</p>
+          </div>
+          <div>
+            <div class="flex justify-between text-sm font-semibold mb-1">
+              <span>기술적 추세</span><span><span id="sTrendV">0</span> / 10</span>
+            </div>
+            <div class="bar"><div id="sTrendBar" style="width:0%"></div></div>
+            <p class="text-xs text-subtext mt-1.5" id="sTrendNote">-</p>
+          </div>
+          <div>
+            <div class="flex justify-between text-sm font-semibold mb-1">
+              <span>수급 · 모멘텀</span><span><span id="sMomV">0</span> / 10</span>
+            </div>
+            <div class="bar"><div id="sMomBar" style="width:0%"></div></div>
+            <p class="text-xs text-subtext mt-1.5" id="sMomNote">-</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- LLM news -->
+      <div class="card" id="newsCard">
+        <div class="flex justify-between items-start mb-4">
+          <h3 class="font-extrabold text-lg tracking-tight flex items-center gap-2"><i class="ph-fill ph-robot text-tossblue"></i> AI 뉴스 평가</h3>
+          <span id="rNewsSource" class="text-xs text-mute font-mono"></span>
+        </div>
+        <div class="flex gap-2 flex-wrap mb-3">
+          <span id="rNewsSent" class="chip">감정</span>
+          <span id="rNewsSev"  class="chip bg-dim text-text">강도</span>
+          <span id="rNewsAdj"  class="chip bg-dim text-text">조정</span>
+        </div>
+        <p id="rNewsReason" class="text-sm leading-relaxed text-text">-</p>
+      </div>
+
+      <!-- Trade plan -->
+      <div class="card">
+        <h3 class="font-extrabold text-lg tracking-tight mb-4">🎯 스나이퍼 트레이딩 플랜</h3>
+
+        <div class="ladder mb-3" id="ladder"></div>
+
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
+          <div class="bg-fallSoft rounded-toss-sm p-3">
+            <div class="text-fall text-xs font-bold mb-1">🛡️ 손절</div>
+            <div class="font-extrabold" id="tpStop">-</div>
+            <div class="text-xs text-fall" id="tpStopPct">-</div>
+          </div>
+          <div class="bg-blueSoft rounded-toss-sm p-3">
+            <div class="text-tossblue text-xs font-bold mb-1">🎯 진입 추천</div>
+            <div class="font-extrabold text-sm" id="tpEntry">-</div>
+            <div class="text-xs text-tossblue">중간가 기준</div>
+          </div>
+          <div class="bg-goodSoft rounded-toss-sm p-3">
+            <div class="text-good text-xs font-bold mb-1">🚀 1차 목표</div>
+            <div class="font-extrabold" id="tpT1">-</div>
+            <div class="text-xs text-good" id="tpT1Pct">-</div>
+          </div>
+          <div class="bg-riseSoft rounded-toss-sm p-3">
+            <div class="text-rise text-xs font-bold mb-1">💰 2차 목표</div>
+            <div class="font-extrabold" id="tpT2">-</div>
+            <div class="text-xs text-rise" id="tpT2Pct">-</div>
+          </div>
+        </div>
+
+        <div id="tpAlt" class="hidden mt-4 p-3 bg-dim rounded-toss-sm text-sm">
+          <span class="font-bold">눌림목 비교:</span> <span id="tpAltText">-</span>
+        </div>
+
+        <div class="mt-5 flex gap-2 flex-wrap">
+          <button class="btn btn-primary flex-1" id="btnQueue"><i class="ph-bold ph-stack-plus"></i> 매수 후보로 큐잉</button>
+          <button class="btn btn-ghost" onclick="go('orders')"><i class="ph ph-receipt"></i> 주문 내역 열기</button>
+        </div>
+      </div>
+
+      <!-- Indicators -->
+      <div class="card">
+        <h3 class="font-extrabold text-lg tracking-tight mb-4">📐 지표</h3>
+        <div class="grid md:grid-cols-2 gap-4">
+          <div class="space-y-3">
+            <div class="flex justify-between items-center bg-dim rounded-toss-sm p-3">
+              <div>
+                <div class="text-xs text-subtext font-bold">SMA 50</div>
+                <div class="font-extrabold" id="iSma50">-</div>
+              </div>
+              <span id="iSma50Tag" class="chip bg-dim text-subtext">-</span>
+            </div>
+            <div class="flex justify-between items-center bg-dim rounded-toss-sm p-3">
+              <div>
+                <div class="text-xs text-subtext font-bold">SMA 200</div>
+                <div class="font-extrabold" id="iSma200">-</div>
+              </div>
+              <span id="iSma200Tag" class="chip bg-dim text-subtext">-</span>
+            </div>
+            <div class="bg-dim rounded-toss-sm p-3">
+              <div class="text-xs text-subtext font-bold mb-1">Bollinger Width</div>
+              <div class="flex items-end gap-2">
+                <div class="font-extrabold" id="iBoll">-</div>
+                <div class="text-xs text-subtext" id="iBollTag">-</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="bg-dim rounded-toss-sm p-3 flex flex-col items-center justify-center">
+            <div class="text-xs text-subtext font-bold mb-2">RSI(14)</div>
+            <div class="relative">
+              <svg class="donut" width="140" height="140" viewBox="0 0 140 140">
+                <circle cx="70" cy="70" r="58" stroke="#eef0f3" stroke-width="14"/>
+                <circle id="rsiArc" cx="70" cy="70" r="58" stroke="#3182f6" stroke-width="14" stroke-linecap="round" stroke-dasharray="364.4" stroke-dashoffset="364.4"/>
+              </svg>
+              <div class="absolute inset-0 flex flex-col items-center justify-center">
+                <div class="text-2xl font-extrabold" id="iRsi">0</div>
+                <div class="text-xs text-subtext" id="iRsiTag">-</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Technical breakdown -->
+      <div class="card">
+        <h3 class="font-extrabold text-lg tracking-tight mb-4">🔍 기술적 정밀 분석</h3>
+        <div class="space-y-3 text-sm">
+          <div class="flex gap-3"><span class="font-bold w-20 shrink-0 text-subtext">추세</span><span id="tTrend" class="text-text">-</span></div>
+          <div class="flex gap-3"><span class="font-bold w-20 shrink-0 text-subtext">패턴</span><span id="tPattern" class="text-text">-</span></div>
+          <div class="flex gap-3"><span class="font-bold w-20 shrink-0 text-subtext">거래량</span><span id="tVolume" class="text-text">-</span></div>
+          <div class="flex gap-3"><span class="font-bold w-20 shrink-0 text-subtext">위험요소</span><span id="tRisk" class="text-text">-</span></div>
+          <div class="flex gap-3"><span class="font-bold w-20 shrink-0 text-subtext">상대강도</span><span id="tRel" class="text-text">-</span></div>
+        </div>
+      </div>
+
+      <!-- Catalyst -->
+      <div class="card">
+        <h3 class="font-extrabold text-lg tracking-tight mb-2">📰 카탈리스트 (로컬 캐시)</h3>
+        <p id="rCatalyst" class="text-sm text-subtext leading-relaxed">-</p>
+      </div>
+    </div>
+  </section>
+
+
+  <!-- ─── SCAN ────────────────────────────────────────────── -->
+  <section id="page-scan" class="hidden space-y-6 fade-in">
+    <div>
+      <h1 class="text-3xl font-extrabold tracking-tight">관심종목 스캔</h1>
+      <p class="text-subtext mt-2">워치리스트 전체를 한 번에 평가하고 매수 후보를 찾습니다.</p>
+    </div>
+
+    <!-- 워치리스트 편집 패널 -->
+    <div class="card space-y-3">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <h3 class="font-extrabold text-base">📋 워치리스트 편집</h3>
+          <select id="wlFile" class="input rounded-toss-sm px-3 py-1.5 text-sm font-semibold" onchange="loadWatchlistEditor()"></select>
+        </div>
+        <button onclick="saveWatchlist()" class="btn btn-primary text-sm px-3 py-1.5"><i class="ph-bold ph-floppy-disk"></i> 저장</button>
+      </div>
+
+      <!-- 종목 추가 폼 -->
+      <div class="flex gap-2 items-end flex-wrap border-t border-border pt-3">
+        <label class="flex flex-col gap-1">
+          <span class="text-subtext text-xs px-1">종목코드</span>
+          <input id="wlTicker" placeholder="NVDA / 005930" class="input rounded-toss-sm px-3 py-2 w-36 font-semibold uppercase" />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-subtext text-xs px-1">시장</span>
+          <select id="wlMarket" class="input rounded-toss-sm px-3 py-2 font-semibold">
+            <option value="US">🇺🇸 미국</option>
+            <option value="KR">🇰🇷 한국</option>
+          </select>
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-subtext text-xs px-1">회사명 (선택)</span>
+          <input id="wlCompany" placeholder="NVIDIA" class="input rounded-toss-sm px-3 py-2 w-36" />
+        </label>
+        <button onclick="addWatchlistRow()" class="btn btn-secondary text-sm px-3 py-2"><i class="ph-bold ph-plus"></i> 추가</button>
+      </div>
+
+      <!-- 현재 종목 목록 -->
+      <div id="wlList" class="divide-y divide-border max-h-60 overflow-y-auto rounded-toss-sm border border-border"></div>
+      <p id="wlEmpty" class="text-subtext text-sm text-center py-4">종목을 추가하세요</p>
+    </div>
+
+    <!-- 스캔 실행 -->
+    <div class="card flex gap-3 items-end flex-wrap">
+      <label class="flex flex-col gap-1 flex-1 min-w-[200px]">
+        <span class="text-subtext text-xs px-1">워치리스트</span>
+        <select id="sFile" class="input rounded-toss-sm px-3 py-2 font-semibold"></select>
+      </label>
+      <label class="flex flex-col gap-1 w-40">
+        <span class="text-subtext text-xs px-1">데이터 소스</span>
+        <select id="sSource" class="input rounded-toss-sm px-3 py-2 font-semibold">
+          <option value="kis" selected>KIS API</option>
+          <option value="local">로컬 파일</option>
+        </select>
+      </label>
+      <button id="sRun" class="btn btn-primary"><i class="ph-bold ph-magnifying-glass"></i> 스캔 실행</button>
+    </div>
+
+    <!-- 시세 현황 -->
+    <div class="card space-y-3">
+      <div class="flex items-center justify-between">
+        <h3 class="font-extrabold text-base">📊 시세 현황</h3>
+        <button onclick="loadQuotes()" class="btn btn-ghost text-sm px-2 py-1"><i class="ph-bold ph-arrows-clockwise"></i> 새로고침</button>
+      </div>
+      <div id="quotesGrid" class="grid grid-cols-2 md:grid-cols-3 gap-2"></div>
+      <p id="quotesEmpty" class="text-subtext text-sm text-center py-3 hidden">워치리스트에 종목을 추가하세요</p>
+    </div>
+
+    <div id="sLoading" class="hidden card text-center py-8">
+      <i class="ph ph-circle-notch animate-spin text-2xl text-tossblue"></i>
+      <p class="mt-2 text-subtext text-sm">스캔 진행 중...</p>
+    </div>
+
+    <div id="sResults" class="hidden card">
+      <div class="flex items-center justify-between mb-2 pb-2 border-b border-border">
+        <div class="flex items-center gap-2">
+          <span class="font-extrabold text-base">스캔 결과</span>
+          <span id="sCount" class="chip bg-dim text-subtext text-xs"></span>
+        </div>
+        <div class="flex items-center gap-2">
+          <span id="sLastTime" class="text-xs text-mute"></span>
+          <button onclick="runScan()" class="btn btn-ghost text-sm px-2 py-1"><i class="ph-bold ph-arrows-clockwise"></i> 새로고침</button>
+        </div>
+      </div>
+      <div class="grid grid-cols-7 gap-3 px-3 py-2 text-xs font-bold text-subtext border-b border-border">
+        <div>시장</div><div>종목</div><div class="col-span-2">신호</div><div>점수</div><div>R/R</div><div class="text-right">현재가</div>
+      </div>
+      <div id="sList" class="divide-y divide-border"></div>
+    </div>
+  </section>
+
+
+  <!-- ─── PORTFOLIO ──────────────────────────────────────── -->
+  <section id="page-portfolio" class="hidden space-y-6 fade-in">
+    <div class="flex items-end justify-between">
+      <div>
+        <h1 class="text-3xl font-extrabold tracking-tight">포트폴리오</h1>
+        <p class="text-subtext mt-2">봇이 매수한 보유 포지션의 현재 손익을 추적합니다.</p>
+      </div>
+      <button onclick="loadPortfolio()" class="btn btn-ghost text-sm"><i class="ph-bold ph-arrows-clockwise"></i> 새로고침</button>
+    </div>
+
+    <!-- 브로커 탭 -->
+    <div id="pfBrokerTabs" class="flex gap-2 flex-wrap"></div>
+
+    <div id="pfLoading" class="hidden card text-center py-8">
+      <i class="ph ph-circle-notch animate-spin text-2xl text-tossblue"></i>
+      <p class="mt-2 text-subtext text-sm">시세 조회 중...</p>
+    </div>
+
+    <!-- 보유 포지션 요약 -->
+    <div id="pfSummary" class="hidden">
+      <p class="text-xs font-bold text-subtext uppercase tracking-widest mb-2">보유 포지션 (미실현)</p>
+      <div class="grid grid-cols-3 gap-4">
+        <div class="card text-center">
+          <div class="text-subtext text-xs mb-1">보유 종목수</div>
+          <div id="pfCount" class="text-2xl font-extrabold">-</div>
+        </div>
+        <div class="card text-center">
+          <div class="text-subtext text-xs mb-1">평가 손익</div>
+          <div id="pfTotalPnl" class="text-2xl font-extrabold">-</div>
+        </div>
+        <div class="card text-center">
+          <div class="text-subtext text-xs mb-1">평균 수익률</div>
+          <div id="pfAvgPct" class="text-2xl font-extrabold">-</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 종목별 카드 -->
+    <div id="pfList" class="space-y-3"></div>
+
+    <!-- 완료 거래 요약 -->
+    <div id="pfClosedWrap" class="hidden space-y-3">
+      <p class="text-xs font-bold text-subtext uppercase tracking-widest">완료 거래 (실현손익)</p>
+      <div class="grid grid-cols-4 gap-4">
+        <div class="card text-center">
+          <div class="text-subtext text-xs mb-1">총 거래수</div>
+          <div id="pfClosedCount" class="text-2xl font-extrabold">-</div>
+        </div>
+        <div class="card text-center">
+          <div class="text-subtext text-xs mb-1">실현 손익</div>
+          <div id="pfRealizedPnl" class="text-2xl font-extrabold">-</div>
+        </div>
+        <div class="card text-center">
+          <div class="text-subtext text-xs mb-1">승률</div>
+          <div id="pfWinRate" class="text-2xl font-extrabold">-</div>
+        </div>
+        <div class="card text-center">
+          <div class="text-subtext text-xs mb-1">평균 수익률</div>
+          <div id="pfAvgReturn" class="text-2xl font-extrabold">-</div>
+        </div>
+      </div>
+      <div id="pfClosedList" class="space-y-2"></div>
+    </div>
+
+    <div id="pfEmpty" class="card text-center py-12 text-subtext">
+      <i class="ph ph-chart-line-up text-3xl mb-2 block opacity-30"></i>
+      체결된 보유 포지션이 없습니다.<br>
+      <span class="text-xs mt-1 block">봇이 매수 주문을 체결하면 여기에 표시됩니다.</span>
+    </div>
+  </section>
+
+
+  <!-- ─── AUTO (Mission Control) ──────────────────────────── -->
+  <section id="page-auto" class="hidden space-y-5 fade-in">
+
+    <!-- HERO: status pulse + countdown + master toggle -->
+    <div class="mc-hero rounded-2xl p-6 relative overflow-hidden">
+      <div class="absolute inset-0 mc-grid-bg opacity-30 pointer-events-none"></div>
+      <div class="relative flex items-center justify-between gap-6 flex-wrap">
+        <div class="flex items-center gap-4">
+          <div class="mc-pulse-wrap">
+            <span id="mcPulseDot" class="mc-pulse-dot mc-pulse-idle"></span>
+          </div>
+          <div>
+            <div class="flex items-center gap-2">
+              <span class="text-xs uppercase tracking-[0.2em] text-subtext font-bold">Mission Control</span>
+              <span id="mcStatusChip" class="chip text-xs font-bold bg-dim text-subtext">대기</span>
+            </div>
+            <h1 class="text-3xl font-extrabold tracking-tight leading-tight mt-1">Auto-Pilot</h1>
+            <div class="text-sm text-subtext mt-1">
+              <span id="mcSessionInfo">설정을 저장한 뒤 토글로 시작하세요</span>
+            </div>
+          </div>
+        </div>
+        <div class="flex items-center gap-5">
+          <div class="text-right">
+            <div class="text-xs text-subtext uppercase tracking-widest">다음 스캔</div>
+            <div id="mcCountdown" class="text-3xl font-extrabold font-mono leading-none mt-1">--:--</div>
+          </div>
+          <label class="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" id="autoToggle" class="sr-only peer" onchange="toggleAuto()">
+            <div class="w-16 h-8 bg-gray-300 rounded-full peer peer-checked:bg-rise transition-all
+                        after:content-[''] after:absolute after:top-0.5 after:left-0.5
+                        after:bg-white after:rounded-full after:shadow-md
+                        after:h-7 after:w-7 after:transition-transform peer-checked:after:translate-x-8"></div>
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <!-- KPI cards: today's activity -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div class="mc-kpi">
+        <div class="flex items-center justify-between">
+          <span class="mc-kpi-label">스캔</span>
+          <i class="ph ph-magnifying-glass text-subtext"></i>
+        </div>
+        <div id="mcKpiScans" class="mc-kpi-val">0</div>
+        <div class="mc-kpi-foot">오늘 분석한 종목</div>
+      </div>
+      <div class="mc-kpi">
+        <div class="flex items-center justify-between">
+          <span class="mc-kpi-label">매수 신호</span>
+          <i class="ph ph-arrow-up text-good"></i>
+        </div>
+        <div id="mcKpiSignals" class="mc-kpi-val text-good">0</div>
+        <div class="mc-kpi-foot">Buy / Strong Buy</div>
+      </div>
+      <div class="mc-kpi">
+        <div class="flex items-center justify-between">
+          <span class="mc-kpi-label">주문 큐</span>
+          <i class="ph ph-paper-plane-tilt text-tossblue"></i>
+        </div>
+        <div id="mcKpiOrders" class="mc-kpi-val text-tossblue">0</div>
+        <div class="mc-kpi-foot">큐잉된 매수/매도</div>
+      </div>
+      <div class="mc-kpi">
+        <div class="flex items-center justify-between">
+          <span class="mc-kpi-label">체결 / 접수</span>
+          <i class="ph ph-check-circle text-rise"></i>
+        </div>
+        <div id="mcKpiFills" class="mc-kpi-val text-rise">0</div>
+        <div class="mc-kpi-foot">브로커 접수 완료</div>
+      </div>
+    </div>
+
+    <!-- Bot holdings grid -->
+    <div class="space-y-3">
+      <div class="flex items-baseline justify-between">
+        <h2 class="text-sm uppercase tracking-widest font-bold text-subtext">봇 보유 포지션 <span id="mcHoldingsCount" class="text-rise">0</span></h2>
+        <button onclick="loadBotHoldings()" class="btn btn-ghost text-xs">
+          <i class="ph-bold ph-arrows-clockwise"></i> 새로고침
+        </button>
+      </div>
+      <div id="mcHoldingsGrid" class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div class="card text-center py-8 text-subtext text-sm">
+          <i class="ph ph-circle-dashed text-3xl opacity-30 block mb-2"></i>
+          봇이 매수한 포지션이 없습니다
+        </div>
+      </div>
+    </div>
+
+    <!-- Live decision feed -->
+    <div class="space-y-3">
+      <div class="flex items-baseline justify-between">
+        <h2 class="text-sm uppercase tracking-widest font-bold text-subtext">실시간 결정 피드</h2>
+        <span id="mcFeedClock" class="text-xs text-mute font-mono"></span>
+      </div>
+      <div class="mc-feed">
+        <div id="autoLogs" class="mc-feed-body">
+          <div class="mc-feed-empty">
+            <i class="ph ph-radio text-2xl mb-2 block opacity-30"></i>
+            자동매매 대기 중 — 토글로 시작하면 결정 스트림이 여기에 표시됩니다.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Collapsible settings drawer -->
+    <details id="mcSettings" class="mc-drawer">
+      <summary class="mc-drawer-summary">
+        <span class="flex items-center gap-2"><i class="ph ph-sliders"></i> 설정</span>
+        <span id="autoSavedAt" class="text-xs text-subtext font-normal"></span>
+      </summary>
+      <div class="mc-drawer-body space-y-4">
+        <div class="grid md:grid-cols-3 gap-3 text-sm">
+          <label class="flex flex-col gap-1">
+            <span class="text-subtext text-xs px-1">워치리스트</span>
+            <select id="autoFile" class="input rounded-toss-sm px-3 py-2 font-semibold"></select>
+          </label>
+          <label class="flex flex-col gap-1">
+            <span class="text-subtext text-xs px-1">스캔 주기</span>
+            <select id="autoInterval" class="input rounded-toss-sm px-3 py-2 font-semibold">
+              <option value="60">1분</option>
+              <option value="180">3분</option>
+              <option value="300" selected>5분</option>
+              <option value="600">10분</option>
+              <option value="1800">30분</option>
+              <option value="3600">1시간</option>
+            </select>
+          </label>
+          <label class="flex flex-col gap-1">
+            <span class="text-subtext text-xs px-1">브로커</span>
+            <select id="autoBroker" class="input rounded-toss-sm px-3 py-2 font-semibold">
+              <option value="mock">Mock (실주문 X)</option>
+              <option value="kis">KIS API</option>
+            </select>
+          </label>
+          <label class="flex flex-col gap-1">
+            <span class="text-subtext text-xs px-1">데이터 소스</span>
+            <select id="autoSource" class="input rounded-toss-sm px-3 py-2 font-semibold">
+              <option value="kis" selected>KIS API</option>
+              <option value="local">로컬 파일</option>
+            </select>
+          </label>
+          <label class="flex flex-col gap-1">
+            <span class="text-subtext text-xs px-1">주문 수량</span>
+            <input id="autoQty" type="number" min="1" value="1" class="input rounded-toss-sm px-3 py-2 font-semibold" />
+          </label>
+          <label class="flex flex-col gap-1">
+            <span class="text-subtext text-xs px-1">동일종목 쿨다운(시간)</span>
+            <input id="autoCooldown" type="number" min="0" value="24" class="input rounded-toss-sm px-3 py-2 font-semibold" />
+          </label>
+        </div>
+        <div class="flex flex-col gap-2 text-sm">
+          <label class="flex items-center gap-2">
+            <input type="checkbox" id="autoCooldownEnabled" checked class="w-4 h-4 accent-tossblue" onchange="_syncCooldownInput()">
+            <span>쿨다운 사용 <span class="text-subtext text-xs">(해제 시 동일 종목 반복 매수 허용)</span></span>
+          </label>
+          <label class="flex items-center gap-2">
+            <input type="checkbox" id="autoLlm" checked class="w-4 h-4 accent-tossblue">
+            <span>LLM 뉴스 분석 사용</span>
+          </label>
+          <label class="flex items-center gap-2">
+            <input type="checkbox" id="autoSize" class="w-4 h-4 accent-tossblue">
+            <span>자동 포지션 사이징 <span class="text-subtext text-xs">(거래당 리스크 % + 잔고 기반, 수량 입력값 무시)</span></span>
+          </label>
+        </div>
+        <div class="flex justify-end pt-2 border-t border-border">
+          <button onclick="saveAutoSettings()" class="btn btn-primary text-sm px-4 py-1.5">
+            <i class="ph-bold ph-floppy-disk"></i> 설정 저장
+          </button>
+        </div>
+      </div>
+    </details>
+
+    <!-- Hidden legacy element for backward compat -->
+    <span id="autoBadge" class="hidden"></span>
+  </section>
+
+
+  <!-- ─── MOCK SIM ───────────────────────────────────────── -->
+  <section id="page-mock" class="hidden space-y-6 fade-in">
+    <div class="flex items-end justify-between">
+      <div>
+        <h1 class="text-3xl font-extrabold tracking-tight flex items-center gap-2">
+          <i class="ph-fill ph-flask text-tossblue"></i> Mock 시뮬레이션
+        </h1>
+        <p class="text-subtext mt-2">Mock 브로커 상태를 직접 조작해 봇 동작을 테스트합니다.</p>
+      </div>
+      <button onclick="loadMockState()" class="btn btn-ghost text-sm">
+        <i class="ph-bold ph-arrows-clockwise"></i> 새로고침
+      </button>
+    </div>
+
+    <div class="card bg-warnSoft border-l-4 border-warn text-sm">
+      <i class="ph ph-warning text-warn"></i>
+      이 컨트롤은 <strong>Mock 브로커에만</strong> 영향을 줍니다. KIS 실/모의계좌는 변경되지 않으며,
+      Mock 브로커로 자동매매 중일 때 봇의 reconcile 로직을 테스트할 수 있습니다.
+    </div>
+
+    <!-- Status cards: KR + US -->
+    <div id="mockStateCards" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="card text-center py-6 text-subtext text-sm">로딩 중...</div>
+    </div>
+
+    <!-- Quick actions -->
+    <div class="card space-y-4">
+      <h3 class="font-extrabold text-lg flex items-center gap-2">
+        <i class="ph-fill ph-lightning text-warn"></i> 빠른 액션
+      </h3>
+      <div class="grid md:grid-cols-3 gap-3">
+        <!-- Set cash -->
+        <div class="bg-dim p-4 rounded-lg space-y-2">
+          <div class="font-bold text-sm flex items-center gap-1"><i class="ph ph-currency-circle-dollar"></i> 시작 현금 설정</div>
+          <div class="flex gap-2">
+            <select id="mockCashMarket" class="input rounded-toss-sm px-2 py-1 text-sm font-semibold w-20">
+              <option value="KR">KR</option>
+              <option value="US" selected>US</option>
+            </select>
+            <input id="mockCashAmount" type="number" min="0" placeholder="금액" class="input rounded-toss-sm px-2 py-1 text-sm flex-1" />
+            <button onclick="mockSetCash()" class="btn btn-primary text-xs px-3">적용</button>
+          </div>
+          <p class="text-xs text-subtext">시작 자본을 변경. 기존 거래 내역은 유지.</p>
+        </div>
+
+        <!-- Inject position -->
+        <div class="bg-dim p-4 rounded-lg space-y-2">
+          <div class="font-bold text-sm flex items-center gap-1"><i class="ph ph-package"></i> 포지션 주입</div>
+          <div class="flex gap-1">
+            <input id="mockInjTicker" placeholder="NVDA" class="input rounded-toss-sm px-2 py-1 text-sm w-20" />
+            <select id="mockInjMarket" class="input rounded-toss-sm px-2 py-1 text-sm w-16">
+              <option value="KR">KR</option>
+              <option value="US" selected>US</option>
+            </select>
+            <input id="mockInjQty" type="number" placeholder="수량" class="input rounded-toss-sm px-2 py-1 text-sm w-16" />
+            <input id="mockInjPrice" type="number" step="0.01" placeholder="단가" class="input rounded-toss-sm px-2 py-1 text-sm w-20" />
+            <button onclick="mockInject()" class="btn btn-primary text-xs px-2">+</button>
+          </div>
+          <p class="text-xs text-subtext">현금 차감 없이 보유종목 추가 (수동 보유 시뮬레이션).</p>
+        </div>
+
+        <!-- Reset -->
+        <div class="bg-dim p-4 rounded-lg space-y-2">
+          <div class="font-bold text-sm flex items-center gap-1"><i class="ph ph-trash"></i> 전체 리셋</div>
+          <label class="flex items-center gap-2 text-xs">
+            <input type="checkbox" id="mockKeepCash" checked class="w-3 h-3 accent-tossblue">
+            <span>시작 현금 설정 유지</span>
+          </label>
+          <button onclick="mockReset()" class="btn text-xs px-3 py-1 w-full bg-fall text-white hover:opacity-90">
+            <i class="ph-bold ph-warning"></i> 원장 + 포지션 전체 삭제
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Manual order -->
+    <div class="card space-y-3">
+      <h3 class="font-extrabold text-lg flex items-center gap-2">
+        <i class="ph-fill ph-paper-plane-tilt text-tossblue"></i> 수동 주문
+      </h3>
+      <p class="text-subtext text-sm">Mock 원장에 직접 매수/매도를 기록합니다. 현금과 포지션이 즉시 반영돼요.</p>
+      <div class="grid grid-cols-2 md:grid-cols-6 gap-2 text-sm">
+        <input id="mockOrdTicker" placeholder="종목" class="input rounded-toss-sm px-3 py-2 font-semibold uppercase" />
+        <select id="mockOrdMarket" class="input rounded-toss-sm px-3 py-2 font-semibold">
+          <option value="KR">KR</option>
+          <option value="US" selected>US</option>
+        </select>
+        <select id="mockOrdSide" class="input rounded-toss-sm px-3 py-2 font-semibold">
+          <option value="buy">매수</option>
+          <option value="sell">매도</option>
+        </select>
+        <input id="mockOrdQty" type="number" min="1" placeholder="수량" class="input rounded-toss-sm px-3 py-2 font-semibold" />
+        <input id="mockOrdPrice" type="number" step="0.01" min="0.01" placeholder="가격" class="input rounded-toss-sm px-3 py-2 font-semibold" />
+        <button onclick="mockPlaceOrder()" class="btn btn-primary font-semibold">
+          <i class="ph-bold ph-paper-plane-tilt"></i> 주문
+        </button>
+      </div>
+    </div>
+
+    <!-- Ledger -->
+    <div class="space-y-3">
+      <div class="flex items-baseline justify-between">
+        <h3 class="font-extrabold text-lg flex items-center gap-2">
+          <i class="ph-fill ph-list text-subtext"></i> 주문 원장
+          <span id="mockLedgerCount" class="text-sm text-subtext font-normal">0건</span>
+        </h3>
+      </div>
+      <div id="mockLedger" class="space-y-2"></div>
+    </div>
+  </section>
+
+
+  <!-- ─── ACCOUNT ────────────────────────────────────────── -->
+  <section id="page-account" class="hidden space-y-6 fade-in">
+    <div class="flex items-end justify-between">
+      <div>
+        <h1 class="text-3xl font-extrabold tracking-tight">계좌</h1>
+        <p class="text-subtext mt-2">KIS 브로커 잔고와 보유 포지션을 한눈에 확인합니다.</p>
+      </div>
+      <div class="flex items-center gap-2">
+        <select id="acctBroker" class="input rounded-toss-sm px-3 py-2 text-sm font-semibold">
+          <option value="kis">KIS</option>
+          <option value="mock">Mock</option>
+        </select>
+        <button onclick="loadAccount()" class="btn btn-ghost text-sm"><i class="ph-bold ph-arrows-clockwise"></i> 새로고침</button>
+      </div>
+    </div>
+
+    <div id="acctLoading" class="hidden card text-center py-8">
+      <i class="ph ph-circle-notch animate-spin text-2xl text-tossblue"></i>
+      <p class="mt-2 text-subtext text-sm">계좌 조회 중...</p>
+    </div>
+
+    <div id="acctBody" class="space-y-6"></div>
+  </section>
+
+
+  <!-- ─── ORDERS ─────────────────────────────────────────── -->
+  <section id="page-orders" class="hidden space-y-6 fade-in">
+    <div class="flex items-end justify-between">
+      <div>
+        <h1 class="text-3xl font-extrabold tracking-tight">주문 내역</h1>
+        <p class="text-subtext mt-2">큐잉된 매수 후보를 검토하고 직접 승인하거나 자동매매가 처리한 결과를 확인합니다.</p>
+      </div>
+      <div class="flex gap-2">
+        <button onclick="syncOrders()" class="btn btn-ghost"><i class="ph-bold ph-broadcast"></i> 브로커 동기화</button>
+        <button onclick="loadOrders()" class="btn btn-ghost"><i class="ph-bold ph-arrows-clockwise"></i> 새로고침</button>
+      </div>
+    </div>
+
+    <div class="flex gap-2 flex-wrap">
+      <button class="chip bg-blueSoft text-tossblue oFilter active" data-status="all">전체</button>
+      <button class="chip bg-dim text-subtext oFilter" data-status="pending">대기</button>
+      <button class="chip bg-dim text-subtext oFilter" data-status="submitted">제출</button>
+      <button class="chip bg-dim text-subtext oFilter" data-status="partially_filled">부분체결</button>
+      <button class="chip bg-dim text-subtext oFilter" data-status="filled">체결완료</button>
+      <button class="chip bg-dim text-subtext oFilter" data-status="rejected">거부</button>
+      <button class="chip bg-dim text-subtext oFilter" data-status="cancelled">취소</button>
+    </div>
+
+    <div id="oList" class="space-y-3">
+      <div class="card text-center text-subtext py-10">불러오는 중...</div>
+    </div>
+  </section>
+
+
+  <!-- ─── SETTINGS ─────────────────────────────────────────── -->
+  <section id="page-settings" class="hidden space-y-6 fade-in">
+    <div>
+      <h1 class="text-3xl font-extrabold tracking-tight">설정</h1>
+      <p class="text-subtext mt-2">민감한 값은 저장 시 디스크의 <code class="bg-dim px-1.5 rounded text-xs">.env</code>에 기록됩니다.</p>
+    </div>
+
+    <div class="card space-y-5">
+      <h3 class="font-extrabold text-lg">전략 (config.yaml)</h3>
+      <div id="cfgGrid" class="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm"></div>
+    </div>
+
+    <div class="card space-y-4">
+      <h3 class="font-extrabold text-lg">KIS API 인증</h3>
+      <p class="text-xs text-subtext">키/시크릿은 첫 4글자만 노출되고 ***로 마스킹됩니다. 마스킹된 값을 그대로 두고 저장하면 기존 값이 유지됩니다.</p>
+      <div class="grid md:grid-cols-2 gap-3">
+        <label class="flex flex-col gap-1 text-sm">
+          <span class="text-subtext text-xs px-1">KIS_MODE</span>
+          <select id="envKIS_MODE" class="input rounded-toss-sm px-3 py-2 font-semibold">
+            <option value="paper">paper (모의)</option>
+            <option value="live">live (실전)</option>
+          </select>
+        </label>
+        <label class="flex flex-col gap-1 text-sm">
+          <span class="text-subtext text-xs px-1">KIS_APP_KEY</span>
+          <input id="envKIS_APP_KEY" class="input rounded-toss-sm px-3 py-2 font-mono text-sm" />
+        </label>
+        <label class="flex flex-col gap-1 text-sm">
+          <span class="text-subtext text-xs px-1">KIS_APP_SECRET</span>
+          <input id="envKIS_APP_SECRET" class="input rounded-toss-sm px-3 py-2 font-mono text-sm" />
+        </label>
+        <label class="flex flex-col gap-1 text-sm">
+          <span class="text-subtext text-xs px-1">KIS_ACCOUNT_NO</span>
+          <input id="envKIS_ACCOUNT_NO" class="input rounded-toss-sm px-3 py-2 font-mono text-sm" />
+        </label>
+        <label class="flex flex-col gap-1 text-sm">
+          <span class="text-subtext text-xs px-1">KIS_ACCOUNT_PRODUCT</span>
+          <input id="envKIS_ACCOUNT_PRODUCT" class="input rounded-toss-sm px-3 py-2 font-mono text-sm" />
+        </label>
+        <label class="flex flex-col gap-1 text-sm">
+          <span class="text-subtext text-xs px-1">KIS_HTS_ID</span>
+          <input id="envKIS_HTS_ID" class="input rounded-toss-sm px-3 py-2 font-mono text-sm" />
+        </label>
+      </div>
+    </div>
+
+    <div class="card space-y-4">
+      <h3 class="font-extrabold text-lg">OpenAI (LLM 뉴스 분석)</h3>
+      <div class="grid md:grid-cols-2 gap-3">
+        <label class="flex flex-col gap-1 text-sm">
+          <span class="text-subtext text-xs px-1">OPENAI_API_KEY</span>
+          <input id="envOPENAI_API_KEY" class="input rounded-toss-sm px-3 py-2 font-mono text-sm" />
+        </label>
+        <label class="flex flex-col gap-1 text-sm">
+          <span class="text-subtext text-xs px-1">OPENAI_MODEL</span>
+          <input id="envOPENAI_MODEL" placeholder="gpt-4o-mini" class="input rounded-toss-sm px-3 py-2 font-mono text-sm" />
+        </label>
+      </div>
+    </div>
+
+    <button id="saveSettings" class="btn btn-primary w-full"><i class="ph-bold ph-floppy-disk"></i> 설정 저장</button>
+  </section>
+
+
+  <!-- ─── LOGS ──────────────────────────────────────────────── -->
+  <section id="page-logs" class="hidden space-y-6 fade-in">
+    <div>
+      <h1 class="text-3xl font-extrabold tracking-tight">활동 로그</h1>
+      <p class="text-subtext mt-2">조회·큐잉·거래·예수금·LLM 원본 기록을 실시간으로 확인합니다.</p>
+    </div>
+
+    <!-- 일일 요약 카드 -->
+    <div id="dailySummary" class="card space-y-4">
+      <div class="flex items-center justify-between">
+        <h3 class="font-extrabold text-lg">일일 요약</h3>
+        <div class="flex items-center gap-2">
+          <select id="logDateSel" class="input text-sm rounded-toss-sm px-3 py-1.5"></select>
+          <button onclick="loadDailyReport()" class="btn btn-ghost text-sm"><i class="ph-bold ph-arrows-clockwise"></i></button>
+        </div>
+      </div>
+      <div id="summaryGrid" class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+        <div class="text-center text-subtext py-6 col-span-4">불러오는 중…</div>
+      </div>
+      <div id="summaryBuyTickers" class="hidden">
+        <div class="text-xs font-bold text-subtext mb-2">매수 신호 종목</div>
+        <div id="buyTickersList" class="flex flex-wrap gap-2"></div>
+      </div>
+      <div id="summaryLastCash" class="hidden text-xs text-subtext border-t border-border pt-3"></div>
+    </div>
+
+    <!-- 필터 바 -->
+    <div class="card flex flex-wrap items-center gap-3">
+      <div class="flex gap-1 flex-wrap">
+        <button class="chip bg-tossblue text-white lFilter active" data-type="" onclick="setLogFilter(this,'')">전체</button>
+        <button class="chip bg-dim text-subtext lFilter" data-type="query" onclick="setLogFilter(this,'query')">조회</button>
+        <button class="chip bg-dim text-subtext lFilter" data-type="queue" onclick="setLogFilter(this,'queue')">큐잉</button>
+        <button class="chip bg-dim text-subtext lFilter" data-type="trade" onclick="setLogFilter(this,'trade')">거래</button>
+        <button class="chip bg-dim text-subtext lFilter" data-type="cash_snapshot" onclick="setLogFilter(this,'cash_snapshot')">예수금</button>
+        <button class="chip bg-dim text-subtext lFilter" data-type="llm_assessment" onclick="setLogFilter(this,'llm_assessment')">LLM</button>
+      </div>
+      <input id="logTickerInput" placeholder="티커 검색…" class="input rounded-toss-sm px-3 py-1.5 text-sm w-32" oninput="loadLogRecords()">
+      <button onclick="loadLogRecords()" class="btn btn-ghost text-sm ml-auto"><i class="ph-bold ph-arrows-clockwise"></i> 새로고침</button>
+    </div>
+
+    <!-- 이벤트 목록 -->
+    <div id="logList" class="space-y-2">
+      <div class="card text-center text-subtext py-10">로그 탭을 열면 자동으로 불러옵니다.</div>
+    </div>
+  </section>
+
+</main>
+
+<!-- Toast container -->
+<div id="toast" class="fixed bottom-6 left-1/2 -translate-x-1/2 hidden bg-text text-white px-5 py-3 rounded-toss-sm shadow-tossLg text-sm font-semibold z-50"></div>
+
+<script>
+// ──────────────────────────────────────────────────────────
+// Helpers
+// ──────────────────────────────────────────────────────────
+const $ = (id) => document.getElementById(id);
+const fmt = (v) => v == null ? '-' : (typeof v === 'number' ? v.toLocaleString(undefined, {maximumFractionDigits: 2}) : v);
+const money = (v, mkt) => v == null ? '-' : (mkt === 'KR' ? '₩' + Math.round(v).toLocaleString() : '$' + v.toLocaleString(undefined,{minimumFractionDigits:2, maximumFractionDigits:2}));
+const pct = (v) => v == null ? '-' : `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`;
+
+let lastReport = null;
+let autoPolling = null;
+const SIGNAL_STYLE = {
+  'Strong Buy': 'bg-riseSoft text-rise',
+  'Buy':        'bg-riseSoft text-rise',
+  'Wait':       'bg-warnSoft text-warn',
+  'Hold Off':   'bg-dim text-subtext',
+  'Sell':       'bg-fallSoft text-fall',
+};
+const SIGNAL_LABEL = {
+  'Strong Buy': '🚨 강력 매수',
+  'Buy':        '✅ 매수',
+  'Wait':       '⚠️ 관망',
+  'Hold Off':   '⛔ 매수 보류',
+  'Sell':       '🔻 매도',
+};
+
+function toast(msg, kind='info') {
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.remove('hidden', 'bg-text', 'bg-rise', 'bg-good');
+  t.classList.add(kind === 'error' ? 'bg-rise' : kind === 'success' ? 'bg-good' : 'bg-text');
+  setTimeout(() => t.classList.add('hidden'), 2400);
+}
+
+async function api(method, path, body) {
+  const init = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body) init.body = JSON.stringify(body);
+  const r = await fetch(path, init);
+  const data = await r.json();
+  if (!data.success) throw new Error(data.error || 'Unknown error');
+  return data.data;
+}
+
+// ──────────────────────────────────────────────────────────
+// Tab navigation
+// ──────────────────────────────────────────────────────────
+const PAGES = ['analyze','scan','portfolio','auto','mock','account','orders','logs','settings'];
+function go(tab) {
+  PAGES.forEach(p => $(`page-${p}`).classList.toggle('hidden', p !== tab));
+  document.querySelectorAll('.nav-link').forEach(a => a.classList.toggle('active', a.dataset.tab === tab));
+  if (tab === 'orders')    loadOrders();
+  if (tab === 'settings')  loadSettings();
+  if (tab === 'auto')      { loadAutoSettings(); pollAuto(); loadBotHoldings(); loadBotStats(); _mcStartCountdown(_mcSavedInterval()); }
+  if (tab === 'mock')      loadMockState();
+  if (tab === 'scan')      { loadWatchlists($('sFile')); loadQuotes(); }
+  if (tab === 'account')   loadAccount();
+  if (tab === 'portfolio') loadPortfolio();
+  if (tab === 'logs')      { loadDailyReport(); loadLogRecords(); }
+}
+
+// ──────────────────────────────────────────────────────────
+// ANALYZE
+// ──────────────────────────────────────────────────────────
+$('aRun').onclick = async () => {
+  const ticker = $('aTicker').value.trim().toUpperCase();
+  if (!ticker) return toast('종목코드를 입력하세요', 'error');
+  const params = new URLSearchParams({
+    ticker,
+    market: $('aMarket').value,
+    source: $('aSource').value,
+    language: $('aLang').value,
+    llm: $('aLlm').value,
+  });
+  $('aResult').classList.add('hidden');
+  $('aLoading').classList.remove('hidden');
+  try {
+    const data = await api('GET', '/api/analyze?' + params);
+    lastReport = data;
+    renderReport(data);
+  } catch (e) {
+    toast('분석 실패: ' + e.message, 'error');
+  } finally {
+    $('aLoading').classList.add('hidden');
+  }
+};
+
+function renderReport(r) {
+  $('aResult').classList.remove('hidden');
+
+  // Hero
+  $('rTicker').textContent = r.ticker;
+  $('rCompany').textContent = r.company_name || '';
+  $('rMeta').textContent = `${r.market} Market · ${r.as_of}`;
+  $('rPrice').textContent = money(r.indicators.close, r.market);
+  const sigCls = SIGNAL_STYLE[r.signal] || 'bg-dim text-subtext';
+  const sig = $('rSignal');
+  sig.className = 'chip ' + sigCls;
+  sig.textContent = SIGNAL_LABEL[r.signal] || r.signal;
+  $('rEarnCaution').classList.toggle('hidden', !r.earnings_caution);
+  $('rReason').textContent = r.reason;
+  $('rRR').textContent = `R/R ${r.trade_plan.rr_ratio.toFixed(2)} : 1`;
+
+  // Summary cards
+  const total = r.scoreboard.fundamentals + r.scoreboard.technical_trend + r.scoreboard.momentum_flow;
+  $('rScoreTotal').textContent = total;
+  $('rScoreSub').textContent = total >= 24 ? '✓ 진입 후보 충족' : `기준 24점에 ${24-total}점 부족`;
+  $('rRR2').textContent = `${r.trade_plan.rr_ratio.toFixed(2)} : 1`;
+  $('rVcpName').textContent = r.indicators.vcp_pattern;
+  $('rVcpScore').textContent = r.indicators.vcp_score;
+
+  // Score bars
+  setScore('sFund', r.scoreboard.fundamentals, r.scoreboard.fundamentals_note);
+  setScore('sTrend', r.scoreboard.technical_trend, r.scoreboard.technical_trend_note);
+  setScore('sMom', r.scoreboard.momentum_flow, r.scoreboard.momentum_flow_note);
+
+  // News
+  if (r.news_assessment) {
+    const na = r.news_assessment;
+    const sentColor = { positive: 'bg-goodSoft text-good', neutral: 'bg-dim text-subtext', negative: 'bg-riseSoft text-rise' }[na.sentiment] || 'bg-dim text-subtext';
+    const emoji = { positive: '🟢', neutral: '⚪', negative: '🔴' }[na.sentiment] || '⚪';
+    $('rNewsSent').className = 'chip ' + sentColor;
+    $('rNewsSent').textContent = `${emoji} ${na.sentiment}`;
+    $('rNewsSev').textContent = `강도 ${na.severity}`;
+    const adjColor = na.score_adjustment > 0 ? 'bg-goodSoft text-good' : na.score_adjustment < 0 ? 'bg-riseSoft text-rise' : 'bg-dim text-subtext';
+    $('rNewsAdj').className = 'chip ' + adjColor;
+    $('rNewsAdj').textContent = `펀더멘털 ${na.score_adjustment >= 0 ? '+' : ''}${na.score_adjustment}`;
+    $('rNewsReason').textContent = na.reasoning || '(평가 없음)';
+    $('rNewsSource').textContent = na.source || '';
+    $('newsCard').classList.remove('hidden');
+  } else {
+    $('newsCard').classList.add('hidden');
+  }
+
+  // Trade plan ladder
+  renderLadder(r);
+
+  $('tpStop').textContent  = money(r.trade_plan.stop_loss, r.market);
+  $('tpStopPct').textContent = pct(r.trade_plan.stop_pct);
+  $('tpEntry').textContent = `${money(r.trade_plan.entry_low, r.market)} ~ ${money(r.trade_plan.entry_high, r.market)}`;
+  $('tpT1').textContent    = money(r.trade_plan.target1, r.market);
+  $('tpT1Pct').textContent = pct(r.trade_plan.target1_pct);
+  $('tpT2').textContent    = money(r.trade_plan.target2, r.market);
+  $('tpT2Pct').textContent = pct(r.trade_plan.target2_pct);
+  if (r.trade_plan.alternate_entry != null && r.trade_plan.alternate_rr_ratio != null) {
+    $('tpAlt').classList.remove('hidden');
+    $('tpAltText').textContent = `${money(r.trade_plan.alternate_entry, r.market)} 진입 시 R/R ${r.trade_plan.alternate_rr_ratio.toFixed(2)} : 1`;
+  } else {
+    $('tpAlt').classList.add('hidden');
+  }
+
+  // Indicators
+  const close = r.indicators.close;
+  $('iSma50').textContent  = money(r.indicators.sma50, r.market);
+  $('iSma50Tag').textContent = close > r.indicators.sma50 ? '현재가 위' : '현재가 아래';
+  $('iSma50Tag').className = 'chip ' + (close > r.indicators.sma50 ? 'bg-goodSoft text-good' : 'bg-riseSoft text-rise');
+  $('iSma200').textContent = money(r.indicators.sma200, r.market);
+  $('iSma200Tag').textContent = close > r.indicators.sma200 ? '추세 양호' : '추세 약세';
+  $('iSma200Tag').className = 'chip ' + (close > r.indicators.sma200 ? 'bg-goodSoft text-good' : 'bg-riseSoft text-rise');
+  const bw = r.indicators.bollinger_width * 100;
+  $('iBoll').textContent   = bw.toFixed(1) + '%';
+  $('iBollTag').textContent = bw < 18 ? '강한 수축 (브레이크아웃 임박)' : bw < 28 ? '약한 수축' : '확장';
+  // RSI donut
+  const rsi = r.indicators.rsi14;
+  $('iRsi').textContent = rsi.toFixed(1);
+  const arc = $('rsiArc');
+  const C = 2 * Math.PI * 58;
+  arc.setAttribute('stroke-dasharray', C);
+  arc.setAttribute('stroke-dashoffset', C * (1 - Math.max(0, Math.min(100, rsi)) / 100));
+  arc.setAttribute('stroke', rsi > 75 ? '#f04452' : rsi < 30 ? '#3182f6' : '#10b981');
+  $('iRsiTag').textContent = rsi > 75 ? '과열' : rsi < 30 ? '과매도' : '중립';
+
+  // Technical
+  $('tTrend').textContent   = r.technical.trend;
+  $('tPattern').textContent = r.technical.pattern;
+  $('tVolume').textContent  = r.technical.volume;
+  $('tRisk').textContent    = r.technical.risk_factors;
+  $('tRel').textContent     = r.technical.relative_strength;
+  $('rCatalyst').textContent = r.catalyst_summary;
+
+  // Queue button gating
+  const canQueue = r.signal === 'Buy' || r.signal === 'Strong Buy';
+  $('btnQueue').disabled = !canQueue;
+  $('btnQueue').textContent = canQueue ? '📥 매수 후보로 큐잉' : `큐잉 불가 (${r.signal})`;
+
+  $('aResult').scrollIntoView({behavior:'smooth', block:'start'});
+}
+
+function setScore(prefix, v, note) {
+  $(prefix + 'V').textContent = v;
+  $(prefix + 'Bar').style.width = (v * 10) + '%';
+  $(prefix + 'Note').textContent = note || '';
+}
+
+function renderLadder(r) {
+  const c = $('ladder');
+  c.innerHTML = '';
+  const axis = document.createElement('div');
+  axis.className = 'axis';
+  c.appendChild(axis);
+
+  const pts = [
+    { k: 'stop',  v: r.trade_plan.stop_loss,    label: '손절',     color: '#3182f6' },
+    { k: 'el',    v: r.trade_plan.entry_low,    label: '진입↓',    color: '#10b981' },
+    { k: 'eh',    v: r.trade_plan.entry_high,   label: '진입↑',    color: '#10b981' },
+    { k: 'now',   v: r.indicators.close,        label: '현재가',   color: '#191f28', dot: 18 },
+    { k: 't1',    v: r.trade_plan.target1,      label: '1차 목표', color: '#f04452' },
+    { k: 't2',    v: r.trade_plan.target2,      label: '2차 목표', color: '#f04452' },
+  ];
+  
+  pts.sort((a, b) => a.v - b.v);
+  
+  const min = pts[0].v;
+  const max = pts[pts.length - 1].v;
+  const span = max - min || 1;
+
+  // 5% margin on each side so edge dots aren't clipped
+  const PAD = 5;
+  const toLeft = v => (PAD + (v - min) / span * (100 - PAD * 2)).toFixed(2);
+
+  const elPct = toLeft(r.trade_plan.entry_low);
+  const ehPct = toLeft(r.trade_plan.entry_high);
+  const startPct = toLeft(min);
+  const endPct   = toLeft(max);
+  axis.style.background = `linear-gradient(90deg,
+    transparent 0%, transparent ${startPct}%,
+    #3182f6 ${startPct}%, #3182f6 ${elPct}%,
+    #10b981 ${elPct}%, #10b981 ${ehPct}%,
+    #f04452 ${ehPct}%, #f04452 ${endPct}%,
+    transparent ${endPct}%, transparent 100%)`;
+
+  pts.forEach((p, i) => {
+    const isUp = i % 2 === 0;
+    const isFar = Math.floor(i / 2) % 2 === 1;
+    p.dir = isUp ? 'up' : 'down';
+
+    const lblY = isFar ? 36 : 20;
+    const pxY = isFar ? 50 : 34;
+
+    const styleLbl = isUp ? `bottom:${lblY}px;` : `top:${lblY}px;`;
+    const stylePx = isUp ? `bottom:${pxY}px;` : `top:${pxY}px;`;
+
+    const left = toLeft(p.v);
+    const m = document.createElement('div');
+    m.className = 'marker ' + p.dir;
+    m.style.left = left + '%';
+    m.innerHTML = `
+      <div class="dot" style="background:${p.color}; width:${p.dot||10}px; height:${p.dot||10}px;"></div>
+      <div class="lbl" style="${styleLbl}">${p.label}</div>
+      <div class="px" style="${stylePx}">${money(p.v, r.market)}</div>
+    `;
+    c.appendChild(m);
+  });
+}
+
+$('btnQueue').onclick = async () => {
+  if (!lastReport) return;
+  const qty = parseInt(prompt('주문 수량을 입력하세요', '1') || '0', 10);
+  if (qty <= 0) return;
+  try {
+    const [out, rateData] = await Promise.all([
+      api('POST', '/api/orders/queue', {
+        ticker: lastReport.ticker,
+        market: lastReport.market,
+        quantity: qty,
+        source: $('aSource').value,
+        language: $('aLang').value,
+        use_llm: $('aLlm').value === '1',
+      }),
+      api('GET', '/api/exchange-rate').catch(() => ({ rate: null })),
+    ]);
+    window._usdKrwRate = rateData.rate || window._usdKrwRate || null;
+    const o = out.order;
+    const req = o.request;
+    let amtMsg = '';
+    if (req.limit_price && req.quantity) {
+      const total = req.limit_price * req.quantity;
+      if (req.market === 'US') {
+        amtMsg = ` · $${total.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`;
+        if (window._usdKrwRate) amtMsg += ` (≈ ₩${Math.round(total * window._usdKrwRate).toLocaleString()})`;
+      } else {
+        amtMsg = ` · ₩${Math.round(total).toLocaleString()}`;
+      }
+    }
+    toast(`큐잉 완료${amtMsg}`, 'success');
+  } catch (e) {
+    toast('큐잉 실패: ' + e.message, 'error');
+  }
+};
+
+// ──────────────────────────────────────────────────────────
+// SCAN
+// ──────────────────────────────────────────────────────────
+
+// ── 워치리스트 편집기 ────────────────────────────────────
+let _wlTickers = [];
+
+async function loadWatchlists(targetSelect) {
+  try {
+    const files = await api('GET', '/api/watchlists');
+    [targetSelect, $('autoFile'), $('wlFile')].forEach(sel => {
+      if (!sel) return;
+      const cur = sel.value;
+      sel.innerHTML = files.map(f => `<option value="${f}">${f}</option>`).join('');
+      // always offer watchlist.yaml as default creation target
+      if (!files.some(f => f.includes('watchlist.yaml'))) {
+        sel.innerHTML += '<option value="watchlist.yaml">watchlist.yaml (새로 만들기)</option>';
+      }
+      if (files.includes(cur)) sel.value = cur;
+    });
+    await loadWatchlistEditor();
+    // Restore saved auto settings after options are populated
+    loadAutoSettings();
+  } catch (e) { /* ignore */ }
+}
+
+async function loadWatchlistEditor() {
+  const file = $('wlFile').value;
+  if (!file) return;
+  try {
+    const data = await api('GET', '/api/watchlist/load?file=' + encodeURIComponent(file));
+    _wlTickers = data.tickers || [];
+    renderWatchlistEditor();
+  } catch (e) {
+    _wlTickers = [];
+    renderWatchlistEditor();
+  }
+}
+
+function renderWatchlistEditor() {
+  const list = $('wlList');
+  const empty = $('wlEmpty');
+  if (!_wlTickers.length) {
+    list.innerHTML = '';
+    empty.classList.remove('hidden');
+    return;
+  }
+  empty.classList.add('hidden');
+  list.innerHTML = _wlTickers.map((t, i) => `
+    <div class="flex items-center justify-between px-3 py-2.5 gap-2">
+      <div class="flex items-center gap-3 flex-1 min-w-0">
+        <span class="text-xs font-bold px-2 py-0.5 rounded-full ${t.market === 'US' ? 'bg-blue-50 text-tossblue' : 'bg-red-50 text-fall'}">${t.market}</span>
+        <span class="font-extrabold text-sm">${t.ticker}</span>
+        <span class="text-subtext text-xs truncate">${t.company || ''}</span>
+      </div>
+      <button onclick="removeWatchlistRow(${i})" class="text-subtext hover:text-fall transition-colors p-1 rounded">
+        <i class="ph-bold ph-trash text-sm"></i>
+      </button>
+    </div>
+  `).join('');
+}
+
+function addWatchlistRow() {
+  const ticker = $('wlTicker').value.trim().toUpperCase();
+  const market = $('wlMarket').value;
+  const company = $('wlCompany').value.trim();
+  if (!ticker) { toast('종목코드를 입력하세요', 'error'); return; }
+  if (_wlTickers.some(t => t.ticker === ticker && t.market === market)) {
+    toast(`${market}:${ticker} 이미 추가된 종목입니다`, 'error'); return;
+  }
+  _wlTickers.push({ ticker, market, company });
+  $('wlTicker').value = '';
+  $('wlCompany').value = '';
+  renderWatchlistEditor();
+}
+
+function removeWatchlistRow(i) {
+  _wlTickers.splice(i, 1);
+  renderWatchlistEditor();
+}
+
+async function saveWatchlist() {
+  const file = $('wlFile').value || 'watchlist.yaml';
+  try {
+    const res = await api('POST', '/api/watchlist/save', { file, tickers: _wlTickers });
+    toast(`저장 완료 · ${res.count}개 종목 → ${res.saved}`, 'success');
+    await loadWatchlists($('sFile'));
+  } catch (e) {
+    toast('저장 실패: ' + e.message, 'error');
+  }
+}
+
+// Enter 키로 종목 추가
+document.addEventListener('DOMContentLoaded', () => {
+  const inp = $('wlTicker');
+  if (inp) inp.addEventListener('keydown', e => { if (e.key === 'Enter') addWatchlistRow(); });
+});
+
+// ──────────────────────────────────────────────────────────
+// QUOTES (관심종목 시세판)
+// ──────────────────────────────────────────────────────────
+async function loadQuotes() {
+  const file = $('wlFile') ? $('wlFile').value : ($('sFile') ? $('sFile').value : '');
+  if (!file) return;
+  const grid = $('quotesGrid');
+  const empty = $('quotesEmpty');
+  grid.innerHTML = '<div class="col-span-3 text-center py-4"><i class="ph ph-circle-notch animate-spin text-tossblue text-xl"></i></div>';
+  try {
+    const quotes = await api('GET', '/api/quotes?file=' + encodeURIComponent(file));
+    if (!quotes.length) { grid.innerHTML = ''; empty.classList.remove('hidden'); return; }
+    empty.classList.add('hidden');
+    grid.innerHTML = quotes.map(q => {
+      const chg = q.change_pct;
+      const chgCls = chg == null ? 'text-subtext' : chg >= 0 ? 'text-rise' : 'text-fall';
+      const chgStr = chg == null ? '-' : (chg >= 0 ? '+' : '') + chg.toFixed(2) + '%';
+      const priceStr = q.price != null ? (q.market === 'KR' ? q.price.toLocaleString('ko-KR') + '원' : '$' + q.price.toFixed(2)) : '-';
+      const mktBadge = q.market === 'US'
+        ? '<span class="text-xs font-bold text-tossblue">🇺🇸</span>'
+        : '<span class="text-xs font-bold text-fall">🇰🇷</span>';
+      return `
+        <div class="rounded-toss border border-border p-3 flex flex-col gap-1 cursor-pointer hover:border-tossblue transition-colors"
+             onclick="$('aTicker').value='${q.ticker}';$('aMarket').value='${q.market}';go('analyze')">
+          <div class="flex items-center justify-between gap-1">
+            ${mktBadge}
+            <span class="font-extrabold text-sm flex-1 ml-1">${q.ticker}</span>
+            <span class="text-xs ${chgCls} font-bold">${chgStr}</span>
+          </div>
+          <div class="text-subtext text-xs truncate">${q.company || ''}</div>
+          <div class="font-extrabold text-base mt-0.5">${priceStr}</div>
+          ${q.error ? `<div class="text-xs text-fall">조회 실패</div>` : ''}
+        </div>`;
+    }).join('');
+  } catch (e) {
+    grid.innerHTML = '<div class="col-span-3 text-center text-subtext text-sm py-4">시세 조회 실패</div>';
+  }
+}
+
+// ──────────────────────────────────────────────────────────
+// PORTFOLIO (보유 포지션 손익)
+// ──────────────────────────────────────────────────────────
+// ── Portfolio ──────────────────────────────────────────────
+let _pfData = null;
+let _pfBroker = 'all';
+
+async function loadPortfolio() {
+  $('pfLoading').classList.remove('hidden');
+  $('pfList').innerHTML = '';
+  $('pfClosedList').innerHTML = '';
+  $('pfEmpty').classList.add('hidden');
+  $('pfSummary').classList.add('hidden');
+  $('pfClosedWrap').classList.add('hidden');
+  try {
+    _pfData = await api('GET', '/api/portfolio');
+    $('pfLoading').classList.add('hidden');
+    _renderBrokerTabs(_pfData.brokers || []);
+    _renderPortfolio();
+  } catch (e) {
+    $('pfLoading').classList.add('hidden');
+    $('pfEmpty').classList.remove('hidden');
+    toast('포트폴리오 조회 실패: ' + e.message, 'error');
+  }
+}
+
+function _renderBrokerTabs(brokers) {
+  const all = ['all', ...brokers];
+  const labels = { all: '전체', mock: 'Mock', kis: 'KIS' };
+  $('pfBrokerTabs').innerHTML = all.map(b => `
+    <button onclick="_setPfBroker('${b}')"
+      class="btn text-sm px-4 py-1.5 ${_pfBroker === b ? 'btn-primary' : 'btn-ghost'}"
+      id="pfTab-${b}">
+      ${labels[b] || b.toUpperCase()}
+    </button>`).join('');
+}
+
+function _setPfBroker(b) {
+  _pfBroker = b;
+  _renderBrokerTabs((_pfData?.brokers) || []);
+  _renderPortfolio();
+}
+
+function _renderPortfolio() {
+  if (!_pfData) return;
+  const filter = p => _pfBroker === 'all' || p.broker === _pfBroker;
+  const open = (_pfData.open || []).filter(filter);
+  const closed = (_pfData.closed || []).filter(filter);
+  const hasAny = open.length || closed.length;
+
+  $('pfEmpty').classList.toggle('hidden', hasAny > 0);
+
+  // ── 보유 포지션 ──
+  if (open.length) {
+    const totalPnl = open.reduce((s, p) => s + (p.pnl || 0), 0);
+    const avgPct = open.reduce((s, p) => s + (p.pnl_pct || 0), 0) / open.length;
+    $('pfCount').textContent = open.length + '개';
+    const tCls = totalPnl >= 0 ? 'text-rise' : 'text-fall';
+    $('pfTotalPnl').className = 'text-2xl font-extrabold ' + tCls;
+    $('pfTotalPnl').textContent = _fmtMixed(open, totalPnl);
+    $('pfAvgPct').className = 'text-2xl font-extrabold ' + (avgPct >= 0 ? 'text-rise' : 'text-fall');
+    $('pfAvgPct').textContent = (avgPct >= 0 ? '+' : '') + avgPct.toFixed(2) + '%';
+    $('pfSummary').classList.remove('hidden');
+    $('pfList').innerHTML = open.map(p => _openCard(p)).join('');
+  } else {
+    $('pfSummary').classList.add('hidden');
+    $('pfList').innerHTML = '';
+  }
+
+  // ── 완료 거래 ──
+  if (closed.length) {
+    const realizedPnl = closed.reduce((s, t) => s + (t.pnl || 0), 0);
+    const wins = closed.filter(t => (t.return_pct || 0) > 0).length;
+    const avgRet = closed.reduce((s, t) => s + (t.return_pct || 0), 0) / closed.length;
+    $('pfClosedCount').textContent = closed.length + '건';
+    const rCls = realizedPnl >= 0 ? 'text-rise' : 'text-fall';
+    $('pfRealizedPnl').className = 'text-2xl font-extrabold ' + rCls;
+    $('pfRealizedPnl').textContent = _fmtMixed(closed.map(t => ({market: t.market})), realizedPnl);
+    $('pfWinRate').textContent = Math.round(wins / closed.length * 100) + '%';
+    $('pfWinRate').className = 'text-2xl font-extrabold ' + (wins / closed.length >= 0.5 ? 'text-rise' : 'text-fall');
+    $('pfAvgReturn').className = 'text-2xl font-extrabold ' + (avgRet >= 0 ? 'text-rise' : 'text-fall');
+    $('pfAvgReturn').textContent = (avgRet >= 0 ? '+' : '') + avgRet.toFixed(2) + '%';
+    $('pfClosedList').innerHTML = closed.slice().reverse().map(t => _closedRow(t)).join('');
+    $('pfClosedWrap').classList.remove('hidden');
+  } else {
+    $('pfClosedWrap').classList.add('hidden');
+  }
+}
+
+function _fmtMixed(items, total) {
+  // Mixed markets → just show number with sign
+  const hasKR = items.some(p => p.market === 'KR');
+  const hasUS = items.some(p => p.market === 'US');
+  const sign = total >= 0 ? '+' : '';
+  if (hasKR && !hasUS) return sign + Math.round(total).toLocaleString('ko-KR') + '원';
+  if (hasUS && !hasKR) return sign + '$' + Math.abs(total).toFixed(2) * (total < 0 ? -1 : 1);
+  return sign + total.toFixed(2);  // mixed
+}
+
+function _brokerChip(broker) {
+  const cls = broker === 'kis' ? 'bg-tossblue text-white' : 'bg-dim text-subtext';
+  return `<span class="chip text-xs px-2 py-0.5 ${cls}">${broker === 'kis' ? 'KIS' : 'Mock'}</span>`;
+}
+
+function _openCard(p) {
+  const pnlCls = (p.pnl_pct || 0) >= 0 ? 'text-rise' : 'text-fall';
+  const pnlSign = (p.pnl_pct || 0) >= 0 ? '+' : '';
+  const isKR = p.market === 'KR';
+  const fmt = v => v == null ? '-' : isKR ? Math.round(v).toLocaleString('ko-KR') + '원' : '$' + Number(v).toFixed(2);
+  const bar = p.pnl_pct != null ? Math.min(Math.abs(p.pnl_pct), 30) / 30 * 100 : 0;
+  const barCls = (p.pnl_pct || 0) >= 0 ? 'bg-rise' : 'bg-fall';
+  return `
+    <div class="card space-y-3">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-3">
+          <span class="font-extrabold text-lg">${p.ticker}</span>
+          <span class="text-subtext text-xs">${p.market} · ${p.company || ''}</span>
+          ${_brokerChip(p.broker)}
+        </div>
+        <div class="text-right">
+          <div class="font-extrabold text-xl">${fmt(p.price)}</div>
+          <div class="text-xs ${pnlCls} font-bold">${pnlSign}${(p.pnl_pct || 0).toFixed(2)}%</div>
+        </div>
+      </div>
+      <div class="grid grid-cols-3 gap-3 text-sm">
+        <div><div class="text-subtext text-xs">평균 매수가</div><div class="font-semibold">${fmt(p.avg_price)}</div></div>
+        <div><div class="text-subtext text-xs">보유 수량</div><div class="font-semibold">${p.quantity}주</div></div>
+        <div><div class="text-subtext text-xs">평가 손익</div><div class="font-semibold ${pnlCls}">${pnlSign}${fmt(p.pnl)}</div></div>
+      </div>
+      <div class="h-1.5 bg-dim rounded-full overflow-hidden">
+        <div class="h-full ${barCls} opacity-60 rounded-full transition-all" style="width:${bar}%"></div>
+      </div>
+    </div>`;
+}
+
+function _closedRow(t) {
+  const retCls = (t.return_pct || 0) >= 0 ? 'text-rise' : 'text-fall';
+  const retSign = (t.return_pct || 0) >= 0 ? '+' : '';
+  const isKR = t.market === 'KR';
+  const fmt = v => v == null ? '-' : isKR ? Math.round(v).toLocaleString('ko-KR') + '원' : '$' + Number(v).toFixed(2);
+  const exitLabel = { stop_loss: '손절', target1: '목표1', target2: '목표2', '': '청산' }[t.exit_reason] || t.exit_reason || '청산';
+  const entryDate = t.entry_date ? t.entry_date.slice(0, 10) : '';
+  return `
+    <div class="card py-3 px-4 flex items-center justify-between gap-3 text-sm">
+      <div class="flex items-center gap-2 min-w-0">
+        <span class="font-bold">${t.ticker}</span>
+        <span class="text-subtext text-xs">${t.market}</span>
+        ${_brokerChip(t.broker)}
+        <span class="text-mute text-xs hidden sm:inline">${entryDate}</span>
+      </div>
+      <div class="flex items-center gap-4 shrink-0 text-right">
+        <div class="hidden sm:block text-xs text-subtext">${fmt(t.entry)} → ${fmt(t.exit)}<br>${t.quantity}주 · ${exitLabel}</div>
+        <div>
+          <div class="font-bold ${retCls}">${retSign}${(t.return_pct || 0).toFixed(2)}%</div>
+          <div class="text-xs ${retCls}">${retSign}${fmt(t.pnl)}</div>
+        </div>
+      </div>
+    </div>`;
+}
+
+async function runScan() {
+  $('sLoading').classList.remove('hidden');
+  // show spinner on both buttons
+  const refreshBtn = document.querySelector('#sResults button[onclick="runScan()"]');
+  if (refreshBtn) refreshBtn.innerHTML = '<i class="ph-bold ph-circle-notch animate-spin"></i> 스캔 중';
+  $('sRun').disabled = true;
+  try {
+    const params = new URLSearchParams({
+      watchlist: $('sFile').value,
+      source: $('sSource').value,
+      language: 'ko',
+    });
+    const rows = await api('GET', '/api/scan?' + params);
+    renderScan(rows);
+  } catch (e) {
+    toast('스캔 실패: ' + e.message, 'error');
+  } finally {
+    $('sLoading').classList.add('hidden');
+    $('sRun').disabled = false;
+    if (refreshBtn) refreshBtn.innerHTML = '<i class="ph-bold ph-arrows-clockwise"></i> 새로고침';
+  }
+}
+
+$('sRun').onclick = runScan;
+
+function renderScan(rows) {
+  $('sResults').classList.remove('hidden');
+  // update count + timestamp
+  const now = new Date().toLocaleTimeString('ko-KR', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+  if ($('sCount')) $('sCount').textContent = `${rows.length}종목`;
+  if ($('sLastTime')) $('sLastTime').textContent = `${now} 기준`;
+  const list = $('sList');
+  if (!rows.length) {
+    list.innerHTML = '<div class="px-3 py-6 text-center text-subtext text-sm">결과 없음</div>';
+    return;
+  }
+  list.innerHTML = rows.map(r => {
+    const cls = SIGNAL_STYLE[r.signal] || 'bg-dim text-subtext';
+    const lbl = SIGNAL_LABEL[r.signal] || r.signal;
+    return `
+    <div class="grid grid-cols-7 gap-3 px-3 py-3 items-center hover:bg-dim cursor-pointer" onclick="quickAnalyze('${r.ticker}','${r.market}')">
+      <div class="text-xs font-bold text-subtext">${r.market}</div>
+      <div class="font-extrabold">${r.ticker}<div class="text-xs text-subtext font-medium">${r.company_name || ''}</div></div>
+      <div class="col-span-2"><span class="chip ${cls}">${lbl}</span><div class="text-xs text-subtext mt-1">${r.reason || ''}</div></div>
+      <div class="font-bold">${r.score}/30</div>
+      <div class="font-bold">${(r.rr_ratio||0).toFixed(2)}</div>
+      <div class="text-right font-bold">${money(r.close, r.market)}</div>
+    </div>`;
+  }).join('');
+}
+
+function quickAnalyze(ticker, market) {
+  $('aMarket').value = market;
+  $('aTicker').value = ticker;
+  go('analyze');
+  $('aRun').click();
+}
+
+// ──────────────────────────────────────────────────────────
+// AUTO PILOT
+// ──────────────────────────────────────────────────────────
+const AUTO_SETTINGS_KEY = 'alphaBotAutoSettings';
+
+function _syncCooldownInput() {
+  const enabled = $('autoCooldownEnabled').checked;
+  $('autoCooldown').disabled = !enabled;
+  $('autoCooldown').classList.toggle('opacity-40', !enabled);
+}
+
+function _readAutoFields() {
+  return {
+    watchlist:        $('autoFile').value,
+    interval:         parseInt($('autoInterval').value, 10) || 300,
+    broker:           $('autoBroker').value,
+    source:           $('autoSource').value,
+    quantity:         parseInt($('autoQty').value, 10) || 1,
+    cooldown_hours:   parseInt($('autoCooldown').value, 10) || 24,
+    cooldown_enabled: $('autoCooldownEnabled').checked,
+    use_llm:          $('autoLlm').checked,
+    auto_size:        $('autoSize').checked,
+  };
+}
+
+function saveAutoSettings() {
+  const cfg = _readAutoFields();
+  const savedAt = new Date().toLocaleString('ko-KR', { hour12: false });
+  cfg._savedAt = savedAt;
+  localStorage.setItem(AUTO_SETTINGS_KEY, JSON.stringify(cfg));
+  $('autoSavedAt').textContent = `마지막 저장: ${savedAt}`;
+  toast('Auto-Pilot 설정 저장 완료', 'success');
+}
+
+function loadAutoSettings() {
+  const raw = localStorage.getItem(AUTO_SETTINGS_KEY);
+  if (!raw) return;
+  try {
+    const cfg = JSON.parse(raw);
+    if (cfg.watchlist && $('autoFile').querySelector(`option[value="${cfg.watchlist}"]`))
+      $('autoFile').value = cfg.watchlist;
+    if (cfg.interval)   $('autoInterval').value = String(cfg.interval);
+    if (cfg.broker)     $('autoBroker').value = cfg.broker;
+    if (cfg.source)     $('autoSource').value = cfg.source === 'demo' ? 'kis' : cfg.source;
+    if (cfg.quantity)   $('autoQty').value = String(cfg.quantity);
+    if (cfg.cooldown_hours !== undefined) $('autoCooldown').value = String(cfg.cooldown_hours);
+    if (cfg.cooldown_enabled !== undefined) $('autoCooldownEnabled').checked = !!cfg.cooldown_enabled;
+    if (cfg.use_llm !== undefined) $('autoLlm').checked = !!cfg.use_llm;
+    if (cfg.auto_size !== undefined) $('autoSize').checked = !!cfg.auto_size;
+    _syncCooldownInput();
+    if (cfg._savedAt) $('autoSavedAt').textContent = `마지막 저장: ${cfg._savedAt}`;
+  } catch (_) { /* ignore */ }
+}
+
+async function toggleAuto() {
+  const on = $('autoToggle').checked;
+  try {
+    if (on) {
+      const raw = localStorage.getItem(AUTO_SETTINGS_KEY);
+      if (!raw) {
+        toast('먼저 설정을 저장해 주세요', 'error');
+        $('autoToggle').checked = false;
+        return;
+      }
+      const cfg = JSON.parse(raw);
+      await api('POST', '/api/auto/start', {
+        watchlist:        cfg.watchlist,
+        interval:         cfg.interval         || 300,
+        broker:           cfg.broker           || 'mock',
+        source:           cfg.source           || 'kis',
+        quantity:         cfg.quantity         || 1,
+        cooldown_hours:   cfg.cooldown_hours   ?? 24,
+        cooldown_enabled: cfg.cooldown_enabled ?? true,
+        use_llm:          cfg.use_llm          ?? true,
+        auto_size:        cfg.auto_size        ?? false,
+      });
+      toast('자동매매 시작', 'success');
+    } else {
+      await api('POST', '/api/auto/stop');
+      toast('자동매매 중지');
+    }
+  } catch (e) {
+    toast(e.message, 'error');
+    $('autoToggle').checked = !on;
+  }
+  pollAuto();
+}
+
+// ── Mission Control state ─────────────────────────────────
+let _mcLastTickAt = 0;          // wall-clock when last server tick observed
+let _mcNextScanAt = 0;          // wall-clock when next scan expected (epoch ms)
+let _mcCountdownTimer = null;
+
+function _mcSetStatus(active, hasError) {
+  const dot = $('mcPulseDot');
+  const chip = $('mcStatusChip');
+  dot.className = 'mc-pulse-dot ' + (
+    hasError ? 'mc-pulse-warn' :
+    active   ? 'mc-pulse-active' :
+               'mc-pulse-idle'
+  );
+  if (hasError) {
+    chip.textContent = '오류'; chip.className = 'chip text-xs font-bold bg-fallSoft text-fall';
+  } else if (active) {
+    chip.textContent = '동작 중'; chip.className = 'chip text-xs font-bold bg-goodSoft text-good';
+  } else {
+    chip.textContent = '대기'; chip.className = 'chip text-xs font-bold bg-dim text-subtext';
+  }
+  $('autoBadge').textContent = chip.textContent;  // legacy compat
+}
+
+function _mcStartCountdown(intervalSec) {
+  if (_mcCountdownTimer) clearInterval(_mcCountdownTimer);
+  if (!intervalSec || intervalSec <= 0) {
+    $('mcCountdown').textContent = '--:--';
+    return;
+  }
+  _mcNextScanAt = Date.now() + intervalSec * 1000;
+  const render = () => {
+    const remainMs = Math.max(0, _mcNextScanAt - Date.now());
+    const total = Math.ceil(remainMs / 1000);
+    const m = Math.floor(total / 60);
+    const s = total % 60;
+    $('mcCountdown').textContent = `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  };
+  render();
+  _mcCountdownTimer = setInterval(render, 1000);
+}
+
+async function pollAuto() {
+  if (autoPolling) clearInterval(autoPolling);
+  let _refreshCycle = 0;
+  const tick = async () => {
+    // Refresh KPIs + holdings every ~10s (every 5th tick @ 2s)
+    if (_refreshCycle % 5 === 0) {
+      loadBotStats().catch(() => {});
+      loadBotHoldings().catch(() => {});
+    }
+    _refreshCycle += 1;
+    try {
+      const s = await api('GET', '/api/auto/status');
+      const active = !!s.active;
+      $('autoToggle').checked = active;
+      // Detect feed updates → new tick happened
+      const box = $('autoLogs');
+      const lastLogCount = parseInt(box.dataset.logCount || '0', 10);
+      const newLogCount = (s.logs && s.logs.length) || 0;
+      if (newLogCount > lastLogCount && active) {
+        // A new scan tick occurred — reset countdown from saved interval.
+        const interval = _mcSavedInterval() || 300;
+        _mcStartCountdown(interval);
+      }
+      box.dataset.logCount = String(newLogCount);
+
+      _mcSetStatus(active, false);
+      const atBottom = box.scrollTop + box.clientHeight + 30 >= box.scrollHeight;
+      if (newLogCount) {
+        // Render as feed lines with timestamp + decision colouring.
+        box.innerHTML = s.logs.map(l => {
+          const msg = escapeHtml(l.msg);
+          let cls = '';
+          if (/Strong Buy|✅/.test(l.msg)) cls = 'text-rise';
+          else if (/Hold Off|🚨|❌|⚠️/.test(l.msg)) cls = 'text-fall';
+          else if (/Wait|⏳|🌙|💸/.test(l.msg)) cls = 'text-warn';
+          else if (/매수 신호|➡️/.test(l.msg)) cls = 'text-tossblue';
+          return `<div class="${cls}"><span class="ts">${l.time}</span>${msg}</div>`;
+        }).join('');
+      } else if (active) {
+        box.innerHTML = '<div class="mc-feed-empty">스캔 대기 중…</div>';
+      }
+      if (atBottom) box.scrollTop = box.scrollHeight;
+
+      // Session info line
+      if (active && s.started_at) {
+        $('mcSessionInfo').textContent = `세션 시작 ${s.started_at}`;
+      } else if (active) {
+        $('mcSessionInfo').textContent = '실시간 스캔 진행 중';
+      } else {
+        $('mcSessionInfo').textContent = '설정을 저장한 뒤 토글로 시작하세요';
+      }
+    } catch (e) {
+      _mcSetStatus(false, true);
+    }
+  };
+  await tick();
+  autoPolling = setInterval(tick, 2000);
+}
+
+function _mcSavedInterval() {
+  try {
+    const raw = localStorage.getItem(AUTO_SETTINGS_KEY);
+    if (!raw) return 300;
+    return parseInt(JSON.parse(raw).interval, 10) || 300;
+  } catch (_) { return 300; }
+}
+
+// ── Bot holdings (only positions the bot bought) ──────────
+async function loadBotHoldings() {
+  try {
+    const data = await api('GET', '/api/bot/holdings');
+    const positions = data.positions || [];
+    $('mcHoldingsCount').textContent = positions.length;
+    const grid = $('mcHoldingsGrid');
+    if (!positions.length) {
+      grid.innerHTML = `<div class="card text-center py-8 text-subtext text-sm md:col-span-2">
+        <i class="ph ph-circle-dashed text-3xl opacity-30 block mb-2"></i>
+        봇이 매수한 포지션이 없습니다
+      </div>`;
+      return;
+    }
+    grid.innerHTML = positions.map(p => _mcPositionCard(p)).join('');
+  } catch (e) {
+    $('mcHoldingsGrid').innerHTML = `<div class="card text-fall text-sm md:col-span-2">보유 조회 실패: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function _mcPositionCard(p) {
+  const isKR = p.market === 'KR';
+  const fmt = v => v == null ? '-' : isKR
+    ? Math.round(v).toLocaleString('ko-KR') + '원'
+    : '$' + Number(v).toFixed(2);
+  const pnlCls = (p.pnl_pct || 0) >= 0 ? 'text-rise' : 'text-fall';
+  const pnlSign = (p.pnl_pct || 0) >= 0 ? '+' : '';
+  const ladder = p.ladder_pct == null ? null : Math.max(2, Math.min(98, p.ladder_pct));
+  const exitBadge = p.has_active_exit
+    ? '<span class="chip bg-warnSoft text-warn text-xs">매도 진행 중</span>'
+    : '';
+  const brokerChip = p.broker === 'kis'
+    ? '<span class="chip bg-tossblue text-white text-xs">KIS</span>'
+    : '<span class="chip bg-dim text-subtext text-xs">Mock</span>';
+  const ladderHtml = ladder == null ? '' : `
+    <div class="mt-3">
+      <div class="flex justify-between text-[10px] font-bold uppercase tracking-wider text-subtext mb-1">
+        <span>손절 ${fmt(p.stop_loss)}</span>
+        <span>현재 ${fmt(p.price)}</span>
+        <span>목표 ${fmt(p.target1)}</span>
+      </div>
+      <div class="mc-bar">
+        <div class="mc-bar-fill"></div>
+        <div class="mc-bar-marker" style="left:${ladder}%"></div>
+      </div>
+    </div>`;
+  return `
+    <div class="mc-position">
+      <div class="flex items-start justify-between gap-2">
+        <div class="flex items-center gap-2 min-w-0">
+          <span class="font-extrabold text-lg">${escapeHtml(p.ticker)}</span>
+          ${brokerChip}
+          ${exitBadge}
+        </div>
+        <div class="text-right shrink-0">
+          <div class="font-extrabold text-lg ${pnlCls}">${pnlSign}${(p.pnl_pct || 0).toFixed(2)}%</div>
+          <div class="text-xs ${pnlCls}">${pnlSign}${fmt(p.pnl)}</div>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-2 text-xs mt-2">
+        <div><span class="text-subtext">평균</span> <span class="font-semibold">${fmt(p.avg_price)}</span></div>
+        <div class="text-right"><span class="text-subtext">수량</span> <span class="font-semibold">${p.quantity}주</span></div>
+      </div>
+      ${ladderHtml}
+    </div>`;
+}
+
+// ── Today's KPI counts ────────────────────────────────────
+async function loadBotStats() {
+  try {
+    const s = await api('GET', '/api/bot/stats');
+    $('mcKpiScans').textContent = s.scans || 0;
+    $('mcKpiSignals').textContent = s.signals || 0;
+    $('mcKpiOrders').textContent = s.orders || 0;
+    $('mcKpiFills').textContent = s.fills || 0;
+  } catch (_) { /* ignore */ }
+}
+
+// ──────────────────────────────────────────────────────────
+// MOCK SIM
+// ──────────────────────────────────────────────────────────
+async function loadMockState() {
+  try {
+    const data = await api('GET', '/api/mock/state');
+    _renderMockCards(data.markets || {});
+    _renderMockLedger(data.ledger || []);
+  } catch (e) {
+    $('mockStateCards').innerHTML = `<div class="card text-fall text-sm md:col-span-2">Mock 상태 조회 실패: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function _fmtMock(v, currency) {
+  if (v == null) return '-';
+  if (currency === 'KRW') return '₩' + Math.round(v).toLocaleString('ko-KR');
+  return '$' + Number(v).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+}
+
+function _renderMockCards(markets) {
+  const html = ['KR', 'US'].map(mk => {
+    const m = markets[mk] || {};
+    if (m.error) {
+      return `<div class="card border-l-4 border-fall">
+        <div class="font-extrabold mb-1">${mk}</div>
+        <div class="text-xs text-fall">${escapeHtml(m.error)}</div>
+      </div>`;
+    }
+    const ccy = m.currency || (mk === 'KR' ? 'KRW' : 'USD');
+    const positions = m.positions || [];
+    const posList = positions.length
+      ? positions.map(p => `
+          <div class="flex items-center justify-between text-xs py-1 border-t border-border">
+            <span class="font-semibold">${escapeHtml(p.ticker)}</span>
+            <span class="text-subtext">${p.quantity}주 @ ${_fmtMock(p.avg_price, ccy)}</span>
+            <span class="font-semibold">${_fmtMock(p.market_value, ccy)}</span>
+          </div>`).join('')
+      : '<div class="text-xs text-subtext py-2 text-center">보유 없음</div>';
+    return `
+      <div class="card">
+        <div class="flex items-center justify-between mb-3">
+          <div class="font-extrabold text-lg">${mk}</div>
+          <span class="chip bg-dim text-subtext text-xs">${ccy}</span>
+        </div>
+        <div class="grid grid-cols-3 gap-2 text-center mb-3">
+          <div>
+            <div class="text-xs text-subtext">가용현금</div>
+            <div class="font-extrabold text-sm">${_fmtMock(m.cash, ccy)}</div>
+          </div>
+          <div>
+            <div class="text-xs text-subtext">보유평가</div>
+            <div class="font-extrabold text-sm">${_fmtMock(m.securities_value, ccy)}</div>
+          </div>
+          <div>
+            <div class="text-xs text-subtext">총자산</div>
+            <div class="font-extrabold text-sm text-tossblue">${_fmtMock(m.total_value, ccy)}</div>
+          </div>
+        </div>
+        <div class="text-xs text-subtext mb-1">시작 현금: ${_fmtMock(m.starting_cash, ccy)}</div>
+        <div class="text-xs font-bold text-subtext uppercase tracking-wider mt-2">보유 종목 (${positions.length})</div>
+        ${posList}
+      </div>`;
+  }).join('');
+  $('mockStateCards').innerHTML = html;
+}
+
+function _renderMockLedger(rows) {
+  $('mockLedgerCount').textContent = `${rows.length}건`;
+  if (!rows.length) {
+    $('mockLedger').innerHTML = '<div class="card text-center text-subtext text-sm py-6">원장이 비어있습니다.</div>';
+    return;
+  }
+  $('mockLedger').innerHTML = rows.map(r => {
+    const sideCls = r.side === 'buy' ? 'text-good bg-goodSoft' : 'text-fall bg-fallSoft';
+    const sideLabel = r.side === 'buy' ? '매수' : '매도';
+    const tag = r.injected
+      ? '<span class="chip bg-warnSoft text-warn text-xs">주입</span>'
+      : r.manual
+        ? '<span class="chip bg-tossblue text-white text-xs">수동</span>'
+        : '<span class="chip bg-dim text-subtext text-xs">봇</span>';
+    const ccy = r.market === 'KR' ? 'KRW' : 'USD';
+    const value = (r.quantity || 0) * (r.limit_price || 0);
+    return `
+      <div class="card py-3 px-4 flex items-center justify-between gap-3 text-sm">
+        <div class="flex items-center gap-2 min-w-0">
+          <span class="chip ${sideCls} text-xs font-bold">${sideLabel}</span>
+          ${tag}
+          <span class="font-extrabold">${escapeHtml(r.ticker)}</span>
+          <span class="text-subtext text-xs">${r.market}</span>
+        </div>
+        <div class="flex items-center gap-4 shrink-0 text-right">
+          <div class="hidden sm:block text-xs text-subtext">
+            ${r.quantity}주 × ${_fmtMock(r.limit_price, ccy)}<br>
+            <span class="font-semibold">${_fmtMock(value, ccy)}</span>
+          </div>
+          <button onclick="mockDeleteOrder('${escapeHtml(r.broker_order_id)}')"
+                  class="btn btn-ghost text-xs text-fall hover:bg-fallSoft" title="삭제">
+            <i class="ph-bold ph-trash"></i>
+          </button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+async function mockPlaceOrder() {
+  const ticker = $('mockOrdTicker').value.trim().toUpperCase();
+  const market = $('mockOrdMarket').value;
+  const side = $('mockOrdSide').value;
+  const quantity = parseInt($('mockOrdQty').value, 10) || 0;
+  const price = parseFloat($('mockOrdPrice').value) || 0;
+  if (!ticker) return toast('종목코드 필요', 'error');
+  if (quantity <= 0 || price <= 0) return toast('수량/가격은 양수', 'error');
+  try {
+    const r = await api('POST', '/api/mock/order', { ticker, market, side, quantity, price });
+    toast(`주문 완료 · ${r.broker_order_id}`, 'success');
+    $('mockOrdTicker').value = '';
+    $('mockOrdQty').value = '';
+    $('mockOrdPrice').value = '';
+    loadMockState();
+  } catch (e) {
+    toast('주문 실패: ' + e.message, 'error');
+  }
+}
+
+async function mockSetCash() {
+  const market = $('mockCashMarket').value;
+  const amount = parseFloat($('mockCashAmount').value) || 0;
+  if (amount < 0) return toast('금액은 0 이상', 'error');
+  try {
+    await api('POST', '/api/mock/set-cash', { market, amount });
+    toast(`${market} 시작 현금 설정 완료`, 'success');
+    $('mockCashAmount').value = '';
+    loadMockState();
+  } catch (e) {
+    toast('설정 실패: ' + e.message, 'error');
+  }
+}
+
+async function mockInject() {
+  const ticker = $('mockInjTicker').value.trim().toUpperCase();
+  const market = $('mockInjMarket').value;
+  const quantity = parseInt($('mockInjQty').value, 10) || 0;
+  const avg_price = parseFloat($('mockInjPrice').value) || 0;
+  if (!ticker) return toast('종목 입력 필요', 'error');
+  if (quantity <= 0 || avg_price <= 0) return toast('수량/단가는 양수', 'error');
+  try {
+    await api('POST', '/api/mock/inject', { ticker, market, quantity, avg_price });
+    toast(`${ticker} ${quantity}주 주입 완료`, 'success');
+    $('mockInjTicker').value = '';
+    $('mockInjQty').value = '';
+    $('mockInjPrice').value = '';
+    loadMockState();
+  } catch (e) {
+    toast('주입 실패: ' + e.message, 'error');
+  }
+}
+
+async function mockReset() {
+  const keep = $('mockKeepCash').checked;
+  if (!confirm('Mock 원장과 포지션을 모두 삭제합니다. 계속할까요?')) return;
+  try {
+    await api('POST', '/api/mock/reset', { keep_starting_cash: keep });
+    toast('Mock 상태 리셋 완료', 'success');
+    loadMockState();
+  } catch (e) {
+    toast('리셋 실패: ' + e.message, 'error');
+  }
+}
+
+async function mockDeleteOrder(orderId) {
+  if (!confirm('이 원장 항목을 삭제할까요?')) return;
+  try {
+    await api('POST', '/api/mock/delete-order', { broker_order_id: orderId });
+    toast('삭제 완료', 'success');
+    loadMockState();
+  } catch (e) {
+    toast('삭제 실패: ' + e.message, 'error');
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// ──────────────────────────────────────────────────────────
+// ORDERS
+// ──────────────────────────────────────────────────────────
+let orderFilter = 'all';
+document.querySelectorAll('.oFilter').forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll('.oFilter').forEach(x => x.classList.replace('bg-blueSoft','bg-dim'));
+    document.querySelectorAll('.oFilter').forEach(x => x.classList.replace('text-tossblue','text-subtext'));
+    b.classList.replace('bg-dim','bg-blueSoft');
+    b.classList.replace('text-subtext','text-tossblue');
+    orderFilter = b.dataset.status;
+    renderOrders(window._orders || []);
+  };
+});
+
+async function loadOrders() {
+  try {
+    const [list, rateData] = await Promise.all([
+      api('GET', '/api/orders'),
+      api('GET', '/api/exchange-rate').catch(() => ({ rate: null })),
+    ]);
+    window._orders = list;
+    window._usdKrwRate = rateData.rate || null;
+    renderOrders(list);
+  } catch (e) {
+    toast('주문 불러오기 실패: ' + e.message, 'error');
+  }
+}
+
+function renderOrders(list) {
+  const filtered = orderFilter === 'all' ? list : list.filter(o => o.status === orderFilter);
+  const box = $('oList');
+  if (!filtered.length) {
+    box.innerHTML = '<div class="card text-center text-subtext py-10">주문이 없습니다.</div>';
+    return;
+  }
+  // Show newest first.
+  filtered.sort((a,b) => (b.created_at || '').localeCompare(a.created_at || ''));
+  box.innerHTML = filtered.map(o => {
+    const STATUS_STYLE = {
+      pending:          'bg-warnSoft text-warn',
+      submitted:        'bg-blueSoft text-tossblue',
+      partially_filled: 'bg-warnSoft text-warn',
+      filled:           'bg-goodSoft text-good',
+      rejected:         'bg-riseSoft text-rise',
+      cancelled:        'bg-dim text-subtext',
+    };
+    const STATUS_LABEL = {
+      pending: '대기',
+      submitted: '제출됨',
+      partially_filled: '부분체결',
+      filled: '체결완료',
+      rejected: '거부',
+      cancelled: '취소',
+    };
+    const req = o.request;
+    const price = req.limit_price != null ? money(req.limit_price, req.market) : '시장가';
+    const canApprove = o.status === 'pending';
+
+    // ── 총 주문금액 계산 ──────────────────────────────
+    const isUS = req.market === 'US';
+    const rate = window._usdKrwRate;
+    let totalHtml = '';
+    if (req.limit_price != null && req.quantity) {
+      const totalAmt = req.limit_price * req.quantity;
+      const totalFmt = isUS
+        ? `$${totalAmt.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`
+        : `₩${Math.round(totalAmt).toLocaleString()}`;
+      const krwLine = isUS && rate
+        ? ` <span class="text-mute">≈ ₩${Math.round(totalAmt * rate).toLocaleString()}</span>`
+        : '';
+      totalHtml = `<div class="mt-2 text-sm font-bold">총 주문금액 <span class="text-tossblue">${totalFmt}</span>${krwLine}${isUS && rate ? `<span class="text-mute text-xs font-normal"> (환율 ${rate.toFixed(0)}원)</span>` : ''}</div>`;
+    }
+
+    // ── 체결 금액 계산 ────────────────────────────────
+    let fillHtml = '';
+    if ((o.filled_quantity || 0) > 0) {
+      const fillAmt = o.avg_fill_price ? o.avg_fill_price * o.filled_quantity : null;
+      const fillFmt = fillAmt != null
+        ? (isUS
+            ? `$${fillAmt.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`
+            : `₩${Math.round(fillAmt).toLocaleString()}`)
+        : '';
+      const fillKrw = isUS && rate && fillAmt
+        ? ` ≈ ₩${Math.round(fillAmt * rate).toLocaleString()}`
+        : '';
+      fillHtml = `<div class="text-xs text-good font-bold mt-2">체결 ${o.filled_quantity}/${req.quantity}주${o.avg_fill_price ? ' @ ' + money(o.avg_fill_price, req.market) : ''}${fillFmt ? ` · 합계 ${fillFmt}${fillKrw}` : ''}</div>`;
+    }
+
+    return `
+      <div class="card pop">
+        <div class="flex justify-between items-start gap-4">
+          <div class="flex-1">
+            <div class="flex items-center gap-2 mb-1">
+              <span class="chip ${STATUS_STYLE[o.status] || 'bg-dim text-subtext'}">${STATUS_LABEL[o.status] || o.status}</span>
+              <span class="font-mono text-xs text-mute">${o.id}</span>
+            </div>
+            <div class="text-lg font-extrabold">${req.market}:${req.ticker} <span class="text-base text-subtext font-medium">${req.side === 'buy' ? '매수' : '매도'} · ${req.quantity}주 · ${price}</span></div>
+            ${o.analysis_signal ? `<div class="mt-1 text-xs"><span class="chip ${SIGNAL_STYLE[o.analysis_signal]||'bg-dim text-subtext'}">${SIGNAL_LABEL[o.analysis_signal]||o.analysis_signal}</span></div>` : ''}
+            ${totalHtml}
+            <div class="grid grid-cols-3 gap-2 mt-3 text-xs">
+              <div class="bg-fallSoft text-fall rounded p-2"><span class="font-bold">손절</span> ${o.stop_loss ? money(o.stop_loss, req.market) : '-'}</div>
+              <div class="bg-goodSoft text-good rounded p-2"><span class="font-bold">1차</span> ${o.target1 ? money(o.target1, req.market) : '-'}</div>
+              <div class="bg-riseSoft text-rise rounded p-2"><span class="font-bold">2차</span> ${o.target2 ? money(o.target2, req.market) : '-'}</div>
+            </div>
+            ${req.reason ? `<p class="text-xs text-subtext mt-2 leading-relaxed">${escapeHtml(req.reason)}</p>` : ''}
+            ${fillHtml}
+            <div class="text-xs text-mute mt-2">생성 ${o.created_at}${o.broker_order_id ? ` · 브로커 ID ${o.broker_order_id}` : ''}${o.last_synced_at ? ` · 마지막 동기화 ${o.last_synced_at}` : ''}</div>
+            ${o.broker_message ? `<div class="text-xs text-mute mt-1">${escapeHtml(o.broker_message)}</div>` : ''}
+          </div>
+          ${canApprove ? `
+            <div class="flex flex-col gap-2 shrink-0">
+              <button class="btn btn-ghost text-sm" onclick="approveOrder('${o.id}','mock')">Mock 승인</button>
+              <button class="btn btn-danger text-sm" onclick="approveOrder('${o.id}','kis')">KIS 승인</button>
+            </div>
+          ` : ''}
+        </div>
+      </div>`;
+  }).join('');
+}
+
+async function syncOrders() {
+  try {
+    const broker = $('autoBroker') ? $('autoBroker').value : 'kis';
+    const out = await api('POST', '/api/orders/sync', { broker });
+    toast(out.count ? `${out.count}건 갱신됨` : '갱신할 주문 없음', out.count ? 'success' : 'info');
+    await loadOrders();
+  } catch (e) {
+    toast('동기화 실패: ' + e.message, 'error');
+  }
+}
+
+async function approveOrder(id, broker) {
+  if (broker === 'kis' && !confirm(`${id}를 KIS 브로커로 승인하시겠습니까? (실제 주문)`)) return;
+  try {
+    const out = await api('POST', '/api/orders/approve', { order_id: id, broker });
+    toast(`${broker.toUpperCase()} ${out.order.status === 'submitted' ? '제출 완료' : '실패'}`, out.order.status === 'submitted' ? 'success' : 'error');
+    await loadOrders();
+  } catch (e) {
+    toast('승인 실패: ' + e.message, 'error');
+  }
+}
+
+// ──────────────────────────────────────────────────────────
+// ACCOUNT
+// ──────────────────────────────────────────────────────────
+const CURRENCY_PREFIX = { KRW: '₩', USD: '$' };
+function curr(amount, code) {
+  if (amount == null) return '-';
+  const prefix = CURRENCY_PREFIX[code] || '';
+  const digits = code === 'KRW' ? 0 : 2;
+  return prefix + Number(amount).toLocaleString(undefined, {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+}
+
+async function loadAccount() {
+  const broker = $('acctBroker').value;
+  $('acctBody').innerHTML = '';
+  $('acctLoading').classList.remove('hidden');
+  try {
+    const data = await api('GET', '/api/account?broker=' + encodeURIComponent(broker));
+    renderAccount(data);
+  } catch (e) {
+    $('acctBody').innerHTML = `<div class="card text-center text-rise py-8">계좌 조회 실패: ${escapeHtml(e.message)}</div>`;
+  } finally {
+    $('acctLoading').classList.add('hidden');
+  }
+}
+
+function renderAccount(data) {
+  const body = $('acctBody');
+  const blocks = [];
+  for (const [market, info] of Object.entries(data.markets || {})) {
+    if (info.error) {
+      blocks.push(`
+        <div class="card">
+          <div class="flex justify-between items-center mb-2">
+            <h3 class="font-extrabold text-lg">${market === 'KR' ? '🇰🇷 한국' : '🇺🇸 미국'}</h3>
+            <span class="chip bg-riseSoft text-rise">조회 실패</span>
+          </div>
+          <p class="text-xs text-subtext font-mono">${escapeHtml(info.error)}</p>
+        </div>`);
+      continue;
+    }
+    const b = info.balance || {};
+    const positions = info.positions || [];
+    const pnlSign = (b.pnl || 0) >= 0 ? '+' : '';
+    const pnlCls = (b.pnl || 0) >= 0 ? 'text-rise' : 'text-fall';
+    const flag = market === 'KR' ? '🇰🇷 한국' : '🇺🇸 미국';
+    const positionRows = positions.length ? positions.map(p => {
+      const psign = p.pnl >= 0 ? '+' : '';
+      const pcls = p.pnl >= 0 ? 'text-rise' : 'text-fall';
+      return `
+        <div class="grid grid-cols-12 gap-2 px-3 py-3 items-center hover:bg-dim text-sm">
+          <div class="col-span-2 font-extrabold">${escapeHtml(p.ticker)}</div>
+          <div class="col-span-2 text-right">${p.quantity.toLocaleString()}</div>
+          <div class="col-span-2 text-right">${curr(p.avg_price, p.currency)}</div>
+          <div class="col-span-2 text-right font-semibold">${curr(p.current_price, p.currency)}</div>
+          <div class="col-span-2 text-right font-bold">${curr(p.market_value, p.currency)}</div>
+          <div class="col-span-2 text-right font-bold ${pcls}">${psign}${curr(p.pnl, p.currency)}<div class="text-xs">${psign}${p.pnl_pct.toFixed(2)}%</div></div>
+        </div>`;
+    }).join('') : '<div class="px-3 py-6 text-center text-subtext text-sm">보유 종목 없음</div>';
+
+    blocks.push(`
+      <div class="card space-y-4">
+        <div class="flex justify-between items-start">
+          <div>
+            <h3 class="font-extrabold text-lg">${flag}</h3>
+            <p class="text-subtext text-xs mt-1">${b.broker || data.broker} · ${b.currency || ''}</p>
+          </div>
+          <div class="text-right">
+            <div class="text-subtext text-xs font-semibold">총 평가</div>
+            <div class="text-2xl font-extrabold">${curr(b.total_value, b.currency)}</div>
+            ${b.pnl != null ? `<div class="text-xs ${pnlCls} font-bold mt-0.5">${pnlSign}${curr(b.pnl, b.currency)}${b.pnl_pct != null ? ` (${pnlSign}${b.pnl_pct.toFixed(2)}%)` : ''}</div>` : ''}
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-3 text-sm">
+          <div class="bg-dim rounded-toss-sm p-3">
+            <div class="text-xs text-subtext font-bold">예수금</div>
+            <div class="font-extrabold mt-0.5">${curr(b.cash, b.currency)}</div>
+          </div>
+          <div class="bg-dim rounded-toss-sm p-3">
+            <div class="text-xs text-subtext font-bold">주식 평가금액</div>
+            <div class="font-extrabold mt-0.5">${curr(b.securities_value, b.currency)}</div>
+          </div>
+        </div>
+        <div>
+          <div class="grid grid-cols-12 gap-2 px-3 py-2 text-xs font-bold text-subtext border-b border-border">
+            <div class="col-span-2">종목</div>
+            <div class="col-span-2 text-right">수량</div>
+            <div class="col-span-2 text-right">평단가</div>
+            <div class="col-span-2 text-right">현재가</div>
+            <div class="col-span-2 text-right">평가금액</div>
+            <div class="col-span-2 text-right">손익</div>
+          </div>
+          <div class="divide-y divide-border">${positionRows}</div>
+        </div>
+      </div>`);
+  }
+  body.innerHTML = blocks.join('') || '<div class="card text-center text-subtext py-8">조회된 시장이 없습니다.</div>';
+}
+
+$('acctBroker').onchange = loadAccount;
+
+// ──────────────────────────────────────────────────────────
+// SETTINGS
+// ──────────────────────────────────────────────────────────
+async function loadSettings() {
+  try {
+    const data = await api('GET', '/api/settings');
+    const cfg = data.config;
+    const env = data.env || {};
+
+    const grid = $('cfgGrid');
+    const labels = {
+      default_market: '기본 시장',
+      broker:         '기본 브로커',
+      data_dir:       '데이터 폴더',
+      approval_queue: '승인 큐 파일',
+      max_positions:  '최대 동시 포지션',
+      risk_per_trade_pct: '거래당 리스크 %',
+      min_score:      '최소 점수',
+      min_rr:         '최소 R/R',
+    };
+    grid.innerHTML = Object.entries(labels).map(([k, lbl]) => `
+      <div class="bg-dim rounded-toss-sm p-3">
+        <div class="text-xs text-subtext font-bold">${lbl}</div>
+        <div class="font-extrabold mt-0.5">${cfg[k] != null ? cfg[k] : '-'}</div>
+      </div>
+    `).join('');
+
+    ['KIS_MODE','KIS_APP_KEY','KIS_APP_SECRET','KIS_ACCOUNT_NO','KIS_ACCOUNT_PRODUCT','KIS_HTS_ID','OPENAI_API_KEY','OPENAI_MODEL']
+      .forEach(k => { const el = $('env' + k); if (el) el.value = env[k] || ''; });
+  } catch (e) {
+    toast('설정 불러오기 실패: ' + e.message, 'error');
+  }
+}
+
+$('saveSettings').onclick = async () => {
+  const env = {};
+  ['KIS_MODE','KIS_APP_KEY','KIS_APP_SECRET','KIS_ACCOUNT_NO','KIS_ACCOUNT_PRODUCT','KIS_HTS_ID','OPENAI_API_KEY','OPENAI_MODEL']
+    .forEach(k => { const v = ($('env' + k) || {}).value; if (v != null) env[k] = v; });
+  try {
+    const out = await api('POST', '/api/settings', { env });
+    toast(`저장 완료 (${out.saved.length}개)`, 'success');
+    loadSettings();
+  } catch (e) {
+    toast('저장 실패: ' + e.message, 'error');
+  }
+};
+
+// ──────────────────────────────────────────────────────────
+// LOGS
+// ──────────────────────────────────────────────────────────
+let _logType = '';
+
+function setLogFilter(btn, type) {
+  document.querySelectorAll('.lFilter').forEach(b => {
+    b.classList.remove('bg-tossblue','text-white');
+    b.classList.add('bg-dim','text-subtext');
+  });
+  btn.classList.remove('bg-dim','text-subtext');
+  btn.classList.add('bg-tossblue','text-white');
+  _logType = type;
+  loadLogRecords();
+}
+
+async function loadDailyReport() {
+  const sel = $('logDateSel');
+  const date = sel?.value || '';
+  try {
+    const data = await api('GET', '/api/daily-report' + (date ? `?date=${date}` : ''));
+    renderDailyReport(data);
+  } catch(e) {
+    $('summaryGrid').innerHTML = `<div class="col-span-4 text-rise text-sm">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderDailyReport(d) {
+  const q = d.queries || {};
+  const qd = d.queued  || {};
+  const tr = d.trades  || {};
+  const ll = d.llm     || {};
+
+  const buySig = (q.by_signal?.['Buy'] || 0) + (q.by_signal?.['Strong Buy'] || 0);
+
+  $('summaryGrid').innerHTML = `
+    <div class="bg-dim rounded-xl p-4 text-center">
+      <div class="text-2xl font-extrabold">${q.total ?? 0}</div>
+      <div class="text-xs text-subtext mt-1">조회</div>
+    </div>
+    <div class="bg-riseSoft rounded-xl p-4 text-center">
+      <div class="text-2xl font-extrabold text-rise">${buySig}</div>
+      <div class="text-xs text-subtext mt-1">매수 신호</div>
+    </div>
+    <div class="bg-warnSoft rounded-xl p-4 text-center">
+      <div class="text-2xl font-extrabold text-warn">${qd.total ?? 0}</div>
+      <div class="text-xs text-subtext mt-1">큐잉</div>
+    </div>
+    <div class="bg-goodSoft rounded-xl p-4 text-center">
+      <div class="text-2xl font-extrabold text-good">${tr.by_status?.submitted ?? 0}</div>
+      <div class="text-xs text-subtext mt-1">주문 제출</div>
+    </div>
+    <div class="bg-dim rounded-xl p-4 text-center">
+      <div class="text-2xl font-extrabold">${tr.by_status?.filled ?? 0}</div>
+      <div class="text-xs text-subtext mt-1">체결</div>
+    </div>
+    <div class="bg-dim rounded-xl p-4 text-center">
+      <div class="text-2xl font-extrabold">${ll.total_calls ?? 0}</div>
+      <div class="text-xs text-subtext mt-1">LLM 호출</div>
+    </div>
+    ${qd.total_value ? `
+    <div class="bg-blueSoft rounded-xl p-4 text-center col-span-2">
+      <div class="text-xl font-extrabold text-tossblue">${Number(qd.total_value).toLocaleString()}</div>
+      <div class="text-xs text-subtext mt-1">총 큐잉 금액</div>
+    </div>` : '<div class="col-span-2"></div>'}
+  `;
+
+  // 매수 신호 종목 배지
+  const bts = q.buy_tickers || [];
+  if (bts.length) {
+    $('summaryBuyTickers').classList.remove('hidden');
+    $('buyTickersList').innerHTML = bts.map(t => {
+      const hasSB = t.signals.includes('Strong Buy');
+      return `<span class="chip ${hasSB ? 'bg-riseSoft text-rise' : 'bg-goodSoft text-good'} font-bold">${t.ticker}${hasSB ? ' 🚨' : ''}</span>`;
+    }).join('');
+  } else {
+    $('summaryBuyTickers').classList.add('hidden');
+  }
+
+  // 최신 예수금
+  const cash = d.cash;
+  if (cash) {
+    $('summaryLastCash').classList.remove('hidden');
+    const cashFmt = cash.currency === 'KRW' || cash.market === 'KR'
+      ? `₩${Math.round(cash.cash).toLocaleString()}`
+      : `${cash.currency} ${Number(cash.cash).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+    $('summaryLastCash').textContent =
+      `최근 예수금 스냅샷 (${cash.trigger || ''}) — ${cashFmt} / 총자산 ${cash.total_value != null ? Number(cash.total_value).toLocaleString() : '-'} · ${cash.ts || ''}`;
+  } else {
+    $('summaryLastCash').classList.add('hidden');
+  }
+}
+
+async function loadLogRecords() {
+  const sel  = $('logDateSel');
+  const date = sel?.value || '';
+  const ticker = ($('logTickerInput')?.value || '').trim().toUpperCase();
+  const params = new URLSearchParams();
+  if (date)   params.set('date', date);
+  if (_logType) params.set('type', _logType);
+  if (ticker) params.set('ticker', ticker);
+  params.set('limit', '300');
+
+  try {
+    const data = await api('GET', `/api/logs?${params}`);
+
+    // populate date selector from available dates (once)
+    const sel = $('logDateSel');
+    if (sel && data.available_dates?.length) {
+      const cur = sel.value;
+      sel.innerHTML = data.available_dates.map(d =>
+        `<option value="${d}" ${d === (cur||data.date) ? 'selected':''}>${_fmtDate(d)}</option>`
+      ).join('');
+    }
+
+    renderLogRecords(data.records || [], data.total);
+  } catch(e) {
+    $('logList').innerHTML = `<div class="card text-rise text-sm">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function _fmtDate(ds) {
+  if (!ds || ds.length !== 8) return ds;
+  return `${ds.slice(0,4)}-${ds.slice(4,6)}-${ds.slice(6,8)}`;
+}
+
+const LOG_EVENT_STYLE = {
+  query:         { bg: 'bg-dim',      label: '조회',    icon: 'ph-magnifying-glass' },
+  queue:         { bg: 'bg-warnSoft', label: '큐잉',    icon: 'ph-clock-countdown', color: 'text-warn' },
+  trade:         { bg: 'bg-goodSoft', label: '거래',    icon: 'ph-handshake',       color: 'text-good' },
+  cash_snapshot: { bg: 'bg-blueSoft', label: '예수금',  icon: 'ph-wallet',          color: 'text-tossblue' },
+  llm_assessment:{ bg: 'bg-riseSoft', label: 'LLM',    icon: 'ph-robot',           color: 'text-rise' },
+};
+
+function renderLogRecords(records, total) {
+  const box = $('logList');
+  if (!records.length) {
+    box.innerHTML = '<div class="card text-center text-subtext py-10">해당 조건의 로그가 없습니다.</div>';
+    return;
+  }
+  box.innerHTML = `<div class="text-xs text-subtext mb-2">총 ${total}건 중 최신 ${records.length}건 표시</div>` +
+    records.map(r => {
+      const ev = r.event || '';
+      const st = LOG_EVENT_STYLE[ev] || { bg: 'bg-dim', label: ev, icon: 'ph-info' };
+      const ts = (r.ts || '').replace('T', ' ').replace('+00:00','');
+
+      let body = '';
+      if (ev === 'query') {
+        const sigStyle = SIGNAL_STYLE[r.signal] || 'bg-dim text-subtext';
+        body = `
+          <div class="flex flex-wrap items-center gap-2 mt-1">
+            <span class="chip ${sigStyle} text-xs">${SIGNAL_LABEL[r.signal] || r.signal}</span>
+            <span class="text-xs text-subtext">${r.market}:${r.ticker}</span>
+            <span class="text-xs font-mono">점수 ${r.score}/30 · R/R ${r.rr}</span>
+            ${r.news_sentiment ? `<span class="chip bg-dim text-xs">${r.news_sentiment} ${r.news_adjustment != null ? `(${r.news_adjustment > 0 ? '+' : ''}${r.news_adjustment})` : ''}</span>` : ''}
+          </div>
+          <p class="text-xs text-subtext mt-1 leading-relaxed">${escapeHtml(r.reason || '')}</p>`;
+      } else if (ev === 'queue') {
+        const total = r.total_value != null
+          ? (r.market === 'KR' ? `₩${Math.round(r.total_value).toLocaleString()}` : `$${Number(r.total_value).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`)
+          : '-';
+        body = `
+          <div class="flex flex-wrap items-center gap-2 mt-1 text-xs">
+            <span class="font-bold">${r.market}:${r.ticker}</span>
+            <span>${r.side === 'buy' ? '매수' : '매도'} ${r.quantity}주</span>
+            ${r.limit_price != null ? `<span>@ ${r.market === 'KR' ? '₩'+Math.round(r.limit_price).toLocaleString() : '$'+Number(r.limit_price).toFixed(2)}</span>` : ''}
+            <span class="font-bold text-warn">합계 ${total}</span>
+            <span class="text-mute font-mono">${r.order_id || ''}</span>
+          </div>`;
+      } else if (ev === 'trade') {
+        const sMap = { submitted:'제출됨', filled:'체결', rejected:'거부', cancelled:'취소' };
+        const sCls = { submitted:'text-tossblue', filled:'text-good', rejected:'text-rise', cancelled:'text-subtext' };
+        body = `
+          <div class="flex flex-wrap items-center gap-2 mt-1 text-xs">
+            <span class="font-bold">${r.market}:${r.ticker}</span>
+            <span>${r.side === 'buy' ? '매수' : '매도'} ${r.quantity}주</span>
+            <span class="font-bold ${sCls[r.status] || ''}">${sMap[r.status] || r.status}</span>
+            ${r.fill_price ? `<span>체결가 ${r.market==='KR'?'₩'+Math.round(r.fill_price).toLocaleString():'$'+Number(r.fill_price).toFixed(2)}</span>` : ''}
+            ${r.broker_order_id ? `<span class="text-mute">${r.broker_order_id}</span>` : ''}
+          </div>`;
+      } else if (ev === 'cash_snapshot') {
+        const cashFmt = r.currency === 'KRW' || r.market === 'KR'
+          ? `₩${Math.round(r.cash).toLocaleString()}`
+          : `${r.currency} ${Number(r.cash).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+        body = `
+          <div class="flex flex-wrap items-center gap-3 mt-1 text-xs">
+            <span class="font-bold text-tossblue">${cashFmt}</span>
+            ${r.total_value != null ? `<span class="text-subtext">총자산 ${Number(r.total_value).toLocaleString()}</span>` : ''}
+            <span class="text-mute">${r.broker || ''} · ${r.trigger || ''}</span>
+          </div>`;
+      } else if (ev === 'llm_assessment') {
+        const p = r.parsed || {};
+        const sentStyle = p.sentiment === 'positive' ? 'text-good' : p.sentiment === 'negative' ? 'text-rise' : 'text-subtext';
+        body = `
+          <div class="flex flex-wrap items-center gap-2 mt-1 text-xs">
+            <span class="font-bold">${r.market}:${r.ticker}</span>
+            <span class="font-mono text-mute">${r.model || ''}</span>
+            <span class="font-bold ${sentStyle}">${p.sentiment || ''}</span>
+            <span>severity:${p.severity || ''}</span>
+            <span>adj:${p.score_adjustment >= 0 ? '+' : ''}${p.score_adjustment ?? 0}</span>
+          </div>
+          ${p.reasoning ? `<p class="text-xs text-subtext mt-1 leading-relaxed">${escapeHtml(p.reasoning)}</p>` : ''}
+          <details class="mt-1">
+            <summary class="text-xs text-mute cursor-pointer">원본 응답 보기</summary>
+            <pre class="text-xs bg-dim rounded p-2 mt-1 overflow-x-auto whitespace-pre-wrap">${escapeHtml(r.raw_response || '')}</pre>
+          </details>`;
+      }
+
+      return `
+        <div class="card">
+          <div class="flex items-center gap-2">
+            <span class="chip ${st.bg} ${st.color || 'text-subtext'} text-xs shrink-0"><i class="ph ${st.icon}"></i> ${st.label}</span>
+            <span class="text-xs text-mute font-mono">${ts}</span>
+          </div>
+          ${body}
+        </div>`;
+    }).join('');
+}
+
+
+// ──────────────────────────────────────────────────────────
+// Init
+// ──────────────────────────────────────────────────────────
+loadWatchlists($('sFile'));
+loadWatchlists($('autoFile'));
+go('analyze');
+</script>
+</body>
+</html>

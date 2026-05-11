@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alpha-canslim-vcp-bot"
+version = "0.1.0"
+description = "Semi-automated CANSLIM + VCP quant bot for KIS KR/US equities."
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+authors = [{ name = "AI Trading Bot" }]
+# Runtime deps: stdlib + KIS REST work without these. The extras enable
+# the LLM news pipeline (openai) and live news scraping (requests, bs4,
+# yfinance for US tickers).
+dependencies = [
+    "openai>=1.40",
+    "requests>=2.31",
+    "beautifulsoup4>=4.12",
+    "yfinance>=0.2.40",
+]
+
+[project.scripts]
+bot = "alpha_bot.runner:main"
+bot-gui = "alpha_bot.gui:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

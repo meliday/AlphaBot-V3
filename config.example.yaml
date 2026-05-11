@@ -1,0 +1,9 @@
+# Minimal bot configuration. The loader supports simple key: value pairs.
+default_market: US
+broker: mock
+data_dir: data
+approval_queue: pending_orders.json
+max_positions: 5
+risk_per_trade_pct: 1.0
+min_score: 24
+min_rr: 1.5

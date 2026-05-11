@@ -1,0 +1,25 @@
+universe:
+  - ticker: NVDA
+    market: US
+    company: NVIDIA
+  - ticker: AAPL
+    market: US
+    company: Apple
+  - ticker: 005930
+    market: KR
+    company: 삼성전자
+  - ticker: 000660
+    market: KR
+    company: SK하이닉스
+  - ticker: TSLL
+    market: US
+    company: TESLA 2배 데일리 ETF
+  - ticker: QQQM
+    market: US
+    company: NSADAQ
+  - ticker: VOO
+    market: US
+    company: S&P 500
+  - ticker: SOXL
+    market: US
+    company: 반도체 3X
