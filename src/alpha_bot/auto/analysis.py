@@ -23,7 +23,7 @@ from alpha_bot.models import (
     Market,
     NewsAssessment,
 )
-from alpha_bot.news import assess_news, neutral_assessment
+from alpha_bot.news import assess_news, cache as news_cache, neutral_assessment
 from alpha_bot.strategy import StrategyAnalyzer
 
 logger = logging.getLogger(__name__)
@@ -79,6 +79,10 @@ def analyze_ticker(
 
 
 def _gather_news_assessment(ticker: str, market: Market, catalysts) -> NewsAssessment:
+    cached = news_cache.load(ticker, market)
+    if cached is not None:
+        logger.info("News assessment cache hit for %s (%s)", ticker, market)
+        return cached
     try:
         from alpha_bot.data.scraper import fetch_news
     except ImportError as exc:
@@ -89,4 +93,6 @@ def _gather_news_assessment(ticker: str, market: Market, catalysts) -> NewsAsses
     except Exception as exc:
         logger.warning("News fetch failed for %s: %s", ticker, exc)
         return neutral_assessment(f"뉴스 수집 실패: {exc}", "")
-    return assess_news(ticker, market, news_text, catalysts)
+    assessment = assess_news(ticker, market, news_text, catalysts)
+    news_cache.save(ticker, market, assessment)
+    return assessment

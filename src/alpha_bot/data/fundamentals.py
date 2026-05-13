@@ -30,21 +30,85 @@ logger = logging.getLogger(__name__)
 _US_EPS_KEYS = ("Diluted EPS", "Basic EPS")
 _US_REVENUE_KEYS = ("Total Revenue", "Operating Revenue", "Revenue")
 
-# Static fallback holdings for well-known ETFs when yfinance funds_data is
-# unavailable. Weights are approximate percentages of NAV.
+# Single-stock leveraged/inverse ETF registry.
+# Maps ETF ticker → (underlying_ticker, leverage_multiplier).
+# leverage_multiplier is positive for bull, negative for bear/inverse.
+_SINGLE_STOCK_LEVERAGED_ETF: dict[str, tuple[str, float]] = {
+    # TSLA-based
+    "TSLL": ("TSLA", 2.0),
+    "TSLS": ("TSLA", -1.0),
+    "TSLQ": ("TSLA", -1.0),
+    "TSL2": ("TSLA", 2.0),
+    # NVDA-based
+    "NVDL": ("NVDA", 2.0),
+    "NVDU": ("NVDA", 2.0),
+    "NVDQ": ("NVDA", -1.0),
+    "NVDS": ("NVDA", -1.5),
+    "NVD":  ("NVDA", -2.0),
+    # MSTR-based
+    "MSTU": ("MSTR", 2.0),
+    "MSTZ": ("MSTR", -2.0),
+    "MSTX": ("MSTR", 2.0),
+    # AMZN-based
+    "AMZU": ("AMZN", 2.0),
+    "AMZD": ("AMZN", -1.0),
+    # AAPL-based
+    "AAPU": ("AAPL", 2.0),
+    "AAPD": ("AAPL", -1.0),
+    # MSFT-based
+    "MSFU": ("MSFT", 2.0),
+    "MSFO": ("MSFT", -1.0),
+    # GOOGL-based
+    "GGLL": ("GOOGL", 2.0),
+    "GGLS": ("GOOGL", -1.0),
+    # META-based
+    "METU": ("META", 2.0),
+    "METD": ("META", -1.0),
+    # AMD-based
+    "AMDU": ("AMD", 2.0),
+    "AMDS": ("AMD", -1.0),
+    # COIN-based
+    "CONL": ("COIN", 2.0),
+    "CONS": ("COIN", -1.0),
+    # PLTR-based
+    "PLTU": ("PLTR", 2.0),
+    # SMCI-based
+    "SMCU": ("SMCI", 2.0),
+    # ARM-based
+    "ARMU": ("ARM", 2.0),
+    # SNOW-based
+    "SNWL": ("SNOW", 2.0),
+    # UBER-based
+    "UBRL": ("UBER", 2.0),
+}
+
+# Static fallback basket holdings for diversified/index ETFs
+# when yfinance funds_data is unavailable. Weights are approximate % of NAV.
 _STATIC_ETF_HOLDINGS: dict[str, list[tuple[str, float]]] = {
     "SOXL": [("NVDA", 20), ("AMD", 12), ("AVGO", 10), ("QCOM", 8), ("TSM", 7)],
     "SOXS": [("NVDA", 20), ("AMD", 12), ("AVGO", 10), ("QCOM", 8), ("TSM", 7)],
     "SOXX": [("NVDA", 9), ("AVGO", 8), ("AMD", 8), ("QCOM", 7), ("TSM", 6)],
     "TQQQ": [("AAPL", 12), ("MSFT", 11), ("NVDA", 9), ("AMZN", 7), ("META", 6)],
+    "SQQQ": [("AAPL", 12), ("MSFT", 11), ("NVDA", 9), ("AMZN", 7), ("META", 6)],
     "QQQ":  [("AAPL", 12), ("MSFT", 11), ("NVDA", 9), ("AMZN", 7), ("META", 6)],
     "QQQS": [("AAPL", 12), ("MSFT", 11), ("NVDA", 9), ("AMZN", 7), ("META", 6)],
     "SPY":  [("AAPL", 7), ("MSFT", 6), ("NVDA", 5), ("AMZN", 3), ("GOOGL", 3)],
     "SPXL": [("AAPL", 7), ("MSFT", 6), ("NVDA", 5), ("AMZN", 3), ("GOOGL", 3)],
+    "SPXS": [("AAPL", 7), ("MSFT", 6), ("NVDA", 5), ("AMZN", 3), ("GOOGL", 3)],
     "ARKK": [("TSLA", 10), ("COIN", 9), ("RBLX", 7), ("SQ", 6), ("TDOC", 5)],
     "XLK":  [("MSFT", 22), ("AAPL", 20), ("NVDA", 17), ("AVGO", 4), ("AMD", 3)],
     "SMH":  [("NVDA", 20), ("TSM", 12), ("AVGO", 8), ("ASML", 7), ("AMD", 6)],
     "VGT":  [("AAPL", 17), ("MSFT", 15), ("NVDA", 13), ("AVGO", 4), ("AMD", 3)],
+    "FNGU": [("META", 10), ("AMZN", 10), ("AAPL", 10), ("NVDA", 10), ("NFLX", 10),
+             ("MSFT", 10), ("GOOGL", 10), ("AMD", 10), ("TSLA", 10), ("SNOW", 10)],
+    "LABU": [("VRTX", 8), ("REGN", 7), ("AMGN", 6), ("GILD", 6), ("MRNA", 5)],
+    "LABD": [("VRTX", 8), ("REGN", 7), ("AMGN", 6), ("GILD", 6), ("MRNA", 5)],
+    "TECL": [("MSFT", 22), ("AAPL", 20), ("NVDA", 17), ("AVGO", 4), ("AMD", 3)],
+    "TECS": [("MSFT", 22), ("AAPL", 20), ("NVDA", 17), ("AVGO", 4), ("AMD", 3)],
+    "UPRO": [("AAPL", 7), ("MSFT", 6), ("NVDA", 5), ("AMZN", 3), ("GOOGL", 3)],
+    "CURE": [("UNH", 10), ("JNJ", 8), ("LLY", 8), ("ABT", 6), ("TMO", 5)],
+    "IWM":  [("SMCI", 1), ("SAIA", 1), ("LUNR", 1), ("CELH", 1), ("BOOT", 1)],
+    "TNA":  [("SMCI", 1), ("SAIA", 1), ("LUNR", 1), ("CELH", 1), ("BOOT", 1)],
 }
 
 
@@ -205,8 +269,54 @@ def _get_etf_holdings(tk: Any, etf_ticker: str) -> list[tuple[str, float]]:
     return static
 
 
+def _fetch_single_stock_etf_fundamentals(
+    underlying: str, leverage: float, etf_ticker: str
+) -> list[FundamentalsQuarter]:
+    """Fetch underlying stock's fundamentals for a single-stock leveraged/inverse ETF.
+
+    Returns up to 4 quarters tagged with etf_proxy=True. The first quarter's
+    period encodes ETF metadata (e.g. 'ETF:TSLL→TSLA×2.0') so downstream
+    scoring notes can surface the leverage context; subsequent quarters keep
+    their original period labels so Q-o-Q acceleration logic works correctly.
+    """
+    quarters = fetch_us_fundamentals(underlying, limit=4, _depth=1)
+    if not quarters:
+        logger.info("ETF %s: underlying %s returned no fundamentals", etf_ticker, underlying)
+        return []
+
+    direction = "Bull" if leverage > 0 else "Bear"
+    tag = f"ETF:{etf_ticker}→{underlying}×{abs(leverage):.1f}({direction})"
+    result = []
+    for i, q in enumerate(quarters):
+        result.append(
+            FundamentalsQuarter(
+                period=tag if i == 0 else q.period,
+                eps_yoy=q.eps_yoy,
+                revenue_yoy=q.revenue_yoy,
+                eps_surprise=q.eps_surprise if i == 0 else None,
+                etf_proxy=True,
+            )
+        )
+    logger.info(
+        "ETF %s proxy (single-stock %s×%.1f): eps_yoy=%s rev_yoy=%s",
+        etf_ticker, underlying, abs(leverage),
+        f"{quarters[0].eps_yoy:.1f}%" if quarters[0].eps_yoy is not None else "n/a",
+        f"{quarters[0].revenue_yoy:.1f}%" if quarters[0].revenue_yoy is not None else "n/a",
+    )
+    return result
+
+
 def _fetch_etf_proxy_fundamentals(tk: Any, etf_ticker: str) -> list[FundamentalsQuarter]:
-    """Aggregate the fundamentals of an ETF's top holdings into a single proxy quarter."""
+    """Return proxy fundamentals for an ETF.
+
+    Single-stock leveraged/inverse ETFs use the underlying stock's earnings
+    directly. Diversified/index ETFs aggregate the top holdings.
+    """
+    sym = etf_ticker.upper()
+    if sym in _SINGLE_STOCK_LEVERAGED_ETF:
+        underlying, leverage = _SINGLE_STOCK_LEVERAGED_ETF[sym]
+        return _fetch_single_stock_etf_fundamentals(underlying, leverage, sym)
+
     holdings = _get_etf_holdings(tk, etf_ticker)
     if not holdings:
         logger.info("No holdings data for ETF %s; fundamentals unavailable", etf_ticker)

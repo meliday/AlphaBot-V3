@@ -1,0 +1,83 @@
+[
+  {
+    "period": "2026Q1",
+    "eps_yoy": 70.0,
+    "revenue_yoy": 20.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "2026-04-24",
+    "etf_proxy": false
+  },
+  {
+    "period": "2025Q4",
+    "eps_yoy": 95.0,
+    "revenue_yoy": 25.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "2026-01-28",
+    "etf_proxy": false
+  },
+  {
+    "period": "2025Q3",
+    "eps_yoy": 140.0,
+    "revenue_yoy": 30.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "2025-10-28",
+    "etf_proxy": false
+  },
+  {
+    "period": "2025Q2",
+    "eps_yoy": 210.0,
+    "revenue_yoy": 35.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "2025-07-24",
+    "etf_proxy": false
+  },
+  {
+    "period": "2025Q1",
+    "eps_yoy": 320.0,
+    "revenue_yoy": 42.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "2025-04-24",
+    "etf_proxy": false
+  },
+  {
+    "period": "2024Q4",
+    "eps_yoy": null,
+    "revenue_yoy": 75.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "2025-01-23",
+    "etf_proxy": false
+  },
+  {
+    "period": "2024Q3",
+    "eps_yoy": null,
+    "revenue_yoy": 93.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "2024-10-24",
+    "etf_proxy": false
+  },
+  {
+    "period": "2024Q2",
+    "eps_yoy": null,
+    "revenue_yoy": 124.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "2024-07-25",
+    "etf_proxy": false
+  },
+  {
+    "period": "2024Q1",
+    "eps_yoy": null,
+    "revenue_yoy": 144.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "2024-04-25",
+    "etf_proxy": false
+  }
+]

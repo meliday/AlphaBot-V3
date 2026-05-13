@@ -70,6 +70,13 @@ class StrategyParams:
     high_conviction_min_rr: float = 1.2
     highest_conviction_score: int = 29  # score ≥ this → relax further
     highest_conviction_min_rr: float = 1.0
+    # R/R-adjusted score floor: wide-reward setups tolerate a slightly lower total
+    # score, because the asymmetric payoff compensates for weaker fundamentals.
+    # Guard: technical_trend must be ≥ high_rr_min_trend so we don't enter
+    # broken-trend names just because the stop happens to be far away.
+    high_rr_score_relax_rr: float = 3.0   # R/R ≥ this → relax min_score
+    high_rr_min_score: int = 22            # relaxed min_score when R/R qualifies
+    high_rr_min_trend: int = 6             # technical_trend sub-score floor for relaxation
 
 
 class StrategyAnalyzer:
@@ -247,8 +254,15 @@ class StrategyAnalyzer:
         eps_text = "n/a" if eps is None else f"{eps:.1f}% EPS YoY"
         rev_text = "n/a" if revenue is None else f"{revenue:.1f}% revenue YoY"
         if latest.etf_proxy:
-            # period encodes the ETF ticker and sampled holdings: "ETF:SOXL→[NVDA, AMD, ...]"
-            note = f"[ETF 프록시] 상위 보유 종목 가중평균 — {eps_text}, {rev_text} ({latest.period})"
+            period = latest.period
+            if "×" in period:
+                # Single-stock leveraged/inverse ETF: period is "ETF:TSLL→TSLA×2.0(Bull)"
+                is_inverse = "(Bear)" in period
+                leverage_warning = " ※ 레버리지 ETF — 변동성 드래그·롤오버 비용 주의" if not is_inverse else " ※ 인버스 ETF — 기초 자산 강세 시 손실"
+                note = f"[레버리지 ETF 프록시] {period} 기초 자산 펀더멘털 — {eps_text}, {rev_text}{leverage_warning}"
+            else:
+                # Basket ETF: period is "ETF:SOXL→[NVDA, AMD, ...]"
+                note = f"[ETF 프록시] 상위 보유 종목 가중평균 — {eps_text}, {rev_text} ({period})"
         else:
             note = f"latest quarter: {eps_text}, {rev_text}; {len(catalysts)} catalyst(s)"
         return min(score, 10), note, earnings_caution
@@ -444,6 +458,17 @@ class StrategyAnalyzer:
         elif scoreboard.total >= p.high_conviction_score:
             effective_min_rr = min(self.min_rr, p.high_conviction_min_rr)
 
+        # R/R-adjusted score floor: a wide-reward setup compensates for a slightly
+        # weaker score. Guard: technical_trend must clear the sub-score floor so
+        # we don't enter broken-trend names just because the stop is far away.
+        effective_min_score = self.min_score
+        rr_relaxed = (
+            rr_ratio >= p.high_rr_score_relax_rr
+            and scoreboard.technical_trend >= p.high_rr_min_trend
+        )
+        if rr_relaxed:
+            effective_min_score = min(self.min_score, p.high_rr_min_score)
+
         if language == "ko":
             if has_sma200 and close < sma200:
                 return "Hold Off", "현재가가 200일선 아래에 있어 마스터 추세 필터에 의해 신규 매수가 차단됩니다."
@@ -456,7 +481,12 @@ class StrategyAnalyzer:
                         f"{effective_min_rr:.1f}:1에도 미달합니다. (기본 기준 {self.min_rr:.1f}:1)"
                     )
                 return "Wait", f"1차 목표 R/R이 {rr_ratio:.2f}:1로, 최소 기준 {self.min_rr:.1f}:1에 미달합니다."
-            if scoreboard.total < self.min_score:
+            if scoreboard.total < effective_min_score:
+                if rr_relaxed and effective_min_score < self.min_score:
+                    return "Wait", (
+                        f"종합 점수가 {scoreboard.total}/30점으로, 높은 R/R({rr_ratio:.2f}:1) 완화 기준 "
+                        f"{effective_min_score}/30에도 미달합니다. (기본 기준 {self.min_score}/30)"
+                    )
                 return "Wait", f"종합 점수가 {scoreboard.total}/30점으로, 매수 기준 {self.min_score}/30에 미달합니다."
             if scoreboard.total >= p.strong_buy_score and rr_ratio >= p.strong_buy_rr:
                 return "Strong Buy", "추세·점수·R/R이 모두 정렬된 고품질 셋업입니다."
@@ -464,6 +494,11 @@ class StrategyAnalyzer:
                 return "Buy", (
                     f"고확신 셋업 (점수 {scoreboard.total}/30): R/R {rr_ratio:.2f}:1이 완화 기준 "
                     f"{effective_min_rr:.1f}:1을 충족합니다."
+                )
+            if rr_relaxed and effective_min_score < self.min_score:
+                return "Buy", (
+                    f"높은 손익비 셋업 (R/R {rr_ratio:.2f}:1): 점수 {scoreboard.total}/30이 "
+                    f"완화 기준 {effective_min_score}/30을 충족합니다. (기본 기준 {self.min_score}/30)"
                 )
             return "Buy", "추세 필터, 퀀트 점수, R/R 모두 v1 진입 조건을 충족합니다."
         else:
@@ -478,7 +513,12 @@ class StrategyAnalyzer:
                         f"of {effective_min_rr:.1f}:1 (base min {self.min_rr:.1f}:1)."
                     )
                 return "Wait", f"Target-1 R/R is {rr_ratio:.2f}:1, below the {self.min_rr:.1f}:1 minimum."
-            if scoreboard.total < self.min_score:
+            if scoreboard.total < effective_min_score:
+                if rr_relaxed and effective_min_score < self.min_score:
+                    return "Wait", (
+                        f"Total score {scoreboard.total}/30 is below the high-R/R relaxed floor of "
+                        f"{effective_min_score}/30 (R/R {rr_ratio:.2f}:1; base min {self.min_score}/30)."
+                    )
                 return "Wait", f"Total score is {scoreboard.total}/30, below the {self.min_score}/30 buy threshold."
             if scoreboard.total >= p.strong_buy_score and rr_ratio >= p.strong_buy_rr:
                 return "Strong Buy", "Trend, score, and R/R are all aligned for a high-quality setup."
@@ -486,6 +526,11 @@ class StrategyAnalyzer:
                 return "Buy", (
                     f"High-conviction setup (score {scoreboard.total}/30): R/R {rr_ratio:.2f}:1 "
                     f"meets the relaxed {effective_min_rr:.1f}:1 floor."
+                )
+            if rr_relaxed and effective_min_score < self.min_score:
+                return "Buy", (
+                    f"High R/R setup (R/R {rr_ratio:.2f}:1): score {scoreboard.total}/30 meets "
+                    f"the relaxed {effective_min_score}/30 floor (base min {self.min_score}/30)."
                 )
             return "Buy", "Trend filter, quant score, and R/R all meet the v1 entry rules."
 
