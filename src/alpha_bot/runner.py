@@ -22,7 +22,7 @@ from alpha_bot.config import load_config, load_watchlist
 from alpha_bot.errors import BotError
 from alpha_bot.models import OrderRequest
 from alpha_bot.report import render_report
-from alpha_bot.strategy import StrategyAnalyzer
+from alpha_bot.strategy import analyzer_from_config
 from alpha_bot.utils import validate_market
 
 logger = logging.getLogger(__name__)
@@ -111,7 +111,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config))
     provider = _provider(args, config.data_dir)
     market = validate_market(args.market)
-    analyzer = StrategyAnalyzer(min_score=config.min_score, min_rr=config.min_rr)
+    analyzer = analyzer_from_config(config)
     use_llm = not args.no_llm
     if use_llm:
         print("\n🔍 뉴스 수집 + LLM 평가 중... (몇 초 걸릴 수 있습니다)\n")
@@ -152,7 +152,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 def cmd_scan(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config))
     provider = _provider(args, config.data_dir)
-    analyzer = StrategyAnalyzer(min_score=config.min_score, min_rr=config.min_rr)
+    analyzer = analyzer_from_config(config)
     rows = load_watchlist(Path(args.universe))
     for row in rows:
         market = validate_market(row["market"])
@@ -238,7 +238,7 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     provider = _provider(args, config.data_dir)
     market = validate_market(args.market)
     candles = provider.get_candles(args.ticker, market, lookback=320)
-    result = Backtester(StrategyAnalyzer(config.min_score, config.min_rr)).run(
+    result = Backtester(analyzer_from_config(config)).run(
         args.ticker,
         market,
         candles,

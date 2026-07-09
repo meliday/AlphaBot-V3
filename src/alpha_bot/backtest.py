@@ -7,7 +7,9 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 
 from alpha_bot.models import Candle, Catalyst, FundamentalsQuarter, Market, MarketContext
+from alpha_bot.risk import TRAIL_ATR_MULT
 from alpha_bot.strategy.analyzer import StrategyAnalyzer
+from alpha_bot.strategy.indicators import latest_atr
 
 logger = logging.getLogger(__name__)
 
@@ -113,23 +115,35 @@ class BacktestResult:
 class Backtester:
     """Walk-forward signal back-tester with configurable cost model.
 
+    Exit model (``split_exits=True``, the default) mirrors the live
+    position manager's ladder:
+        phase 1 — full position: hard stop (market) vs target-1;
+        phase 2 — after target-1 scales out half, the runner half trails a
+        2×ATR stop (ratcheted up on each close, floored at breakeven) until
+        the trailing stop or target-2 is hit. ``split_exits=False`` restores
+        the old single-stage stop/target1/time model for A/B comparison.
+
     Cost accounting:
         slippage_pct is the round-trip slippage estimate; we charge half on
-        each leg (entry up, exit down) so the model is symmetric across buy
-        and sell fills. commission_pct is the total round-trip commission
-        and is deducted once at trade close.
+        each leg (the buy and every sell leg) so the model stays symmetric.
+        commission_pct is the total round-trip commission and is deducted
+        once at trade close.
 
     Exit pricing:
         We check the open price first to model gap risk — if a stock gaps
         below the stop, the actual fill is the gap open, not the stop level.
         Only when the open is intra-bounds do we use stop/target as the fill.
-        This eliminates the "stop = exact stop price" optimistic assumption
-        that previously under-stated tail losses.
+        Within one bar the worst-case ordering is assumed (stop before
+        target, trailing stop before target-2).
 
     Cooldown:
         After an exit, the next entry probe starts the *next* candle. This
         matches the production cooldown of 24h (one trading day), so live
         trade frequency is consistent with backtested frequency.
+
+    Known live/backtest divergences: the LLM news input and intraday quote
+    timing cannot be replayed; the backtest also enforces ``max_hold_days``
+    while live positions have no time exit.
     """
 
     def __init__(
@@ -139,6 +153,7 @@ class Backtester:
         commission_pct: float = 0.10,
         slippage_pct: float = 0.05,
         risk_free_rate: float = 0.0,  # annual %, e.g. 4.5 for US, 3.0 for KR
+        split_exits: bool = True,
     ):
         self.analyzer = analyzer or StrategyAnalyzer()
         self.max_hold_days = max_hold_days
@@ -146,6 +161,7 @@ class Backtester:
         self.commission_pct = commission_pct  # e.g. 0.10 → 0.1 %
         self.slippage_pct = slippage_pct      # e.g. 0.05 → 0.05 %
         self.risk_free_rate = risk_free_rate
+        self.split_exits = split_exits
 
     def run(
         self,
@@ -172,6 +188,11 @@ class Backtester:
             report = self.analyzer.analyze(
                 ticker, market, candles[: index + 1],
                 visible_fundamentals, visible_catalysts, context,
+                # Never consult today's market state (regime veto, live
+                # benchmark) while judging a historical signal — that leaks
+                # the future into the past and makes results depend on the
+                # day the backtest happens to run.
+                use_live_market_data=False,
             )
             if report.signal not in {"Buy", "Strong Buy"}:
                 index += 1
@@ -180,53 +201,23 @@ class Backtester:
             entry_candle = candles[index + 1]
             # Buy leg slippage: open price + half the round-trip slip.
             entry = entry_candle.open * (1 + slip_per_leg)
-            stop = report.trade_plan.stop_loss
-            target = report.trade_plan.target1
-
-            # Walk forward looking for stop/target hits or max-hold expiry.
             max_exit_idx = min(index + self.max_hold_days, len(candles) - 1)
-            exit_idx: int | None = None
-            exit_price_raw: float | None = None
-            outcome: str | None = None
-            for j in range(index + 1, max_exit_idx + 1):
-                future = candles[j]
-                # Gap-down through stop: we fill at the open, not the stop.
-                if future.open <= stop:
-                    exit_price_raw = future.open
-                    outcome = "stop_gap"
-                    exit_idx = j
-                    break
-                # Gap-up through target: fill at the open (conservative — we
-                # exit at the actual achievable price, not the target line).
-                if future.open >= target:
-                    exit_price_raw = future.open
-                    outcome = "target_gap"
-                    exit_idx = j
-                    break
-                # Intraday: assume stop hit first when both touched (worst-
-                # case ordering — protects against optimistic accounting).
-                if future.low <= stop:
-                    exit_price_raw = stop
-                    outcome = "stop"
-                    exit_idx = j
-                    break
-                if future.high >= target:
-                    exit_price_raw = target
-                    outcome = "target1"
-                    exit_idx = j
-                    break
 
-            if exit_idx is None:
-                # Max-hold expiry — exit at the close of the final eligible bar.
-                exit_idx = max_exit_idx
-                exit_price_raw = candles[exit_idx].close
-                outcome = "time"
+            legs, exit_idx, outcome = self._walk_exits(
+                candles,
+                start_idx=index + 1,
+                max_exit_idx=max_exit_idx,
+                entry=entry,
+                stop=report.trade_plan.stop_loss,
+                target1=report.trade_plan.target1,
+                target2=report.trade_plan.target2,
+            )
 
-            # Sell leg slippage: subtract half the round-trip slip.
-            exit_price = exit_price_raw * (1 - slip_per_leg)
+            # Each sell leg pays half the round-trip slip; weights sum to 1,
+            # so the blended exit is a true per-share average. Commission is
+            # deducted once per round trip (slippage already applied per leg).
+            exit_price = sum(w * price * (1 - slip_per_leg) for w, price in legs)
             raw_return = (exit_price / entry - 1) * 100
-            # Only commission is left to subtract (slippage already applied
-            # per-leg above — no double-counting).
             net_return = raw_return - self.commission_pct
 
             trades.append(
@@ -249,11 +240,109 @@ class Backtester:
             slippage_pct=self.slippage_pct,
             risk_free_rate=self.risk_free_rate,
         )
+        return self._finish(result, ticker, market)
+
+    def _walk_exits(
+        self,
+        candles: list[Candle],
+        start_idx: int,
+        max_exit_idx: int,
+        entry: float,
+        stop: float,
+        target1: float,
+        target2: float,
+    ) -> tuple[list[tuple[float, float]], int, str]:
+        """Simulate the live exit ladder over daily bars.
+
+        Returns ``(legs, exit_idx, outcome)`` where each leg is
+        ``(weight, raw_fill_price)`` and the weights sum to 1.
+
+        Phase 1 (full position): gap fills at the open; intraday assumes the
+        stop is touched before the target (worst-case ordering). On a
+        target-1 touch with ``split_exits`` on, half exits and the runner
+        phase starts on the same bar — the freshly-armed trail and target-2
+        are checked against that bar too (again trail first).
+
+        Phase 2 (runner half): the trail starts at
+        max(breakeven, fill − 2×ATR) exactly like the live position manager,
+        ratchets up on every close, and never moves down. Whatever is still
+        open at ``max_exit_idx`` closes at that bar's close ("time").
+        """
+        trail: float | None = None
+        first_leg_outcome = ""
+        legs: list[tuple[float, float]] = []
+
+        for j in range(start_idx, max_exit_idx + 1):
+            bar = candles[j]
+
+            if trail is None:
+                # ── Phase 1: full position vs hard stop / target-1 ──
+                scale_ref: float | None = None
+                if bar.open <= stop:
+                    return [(1.0, bar.open)], j, "stop_gap"
+                if bar.open >= target1:
+                    if not self.split_exits:
+                        return [(1.0, bar.open)], j, "target_gap"
+                    scale_ref = bar.open
+                    first_leg_outcome = "target1_gap"
+                elif bar.low <= stop:
+                    return [(1.0, stop)], j, "stop"
+                elif bar.high >= target1:
+                    if not self.split_exits:
+                        return [(1.0, target1)], j, "target1"
+                    scale_ref = target1
+                    first_leg_outcome = "target1"
+                if scale_ref is None:
+                    continue
+
+                # Target-1 scale-out: half off, arm the runner's trail at
+                # breakeven or 2×ATR under the fill — same as live.
+                legs.append((0.5, scale_ref))
+                atr14 = latest_atr(candles[: j + 1], 14)
+                trail = max(entry, scale_ref - TRAIL_ATR_MULT * atr14)
+
+                # Same-bar runner checks, worst-case ordering (trail first).
+                if bar.low <= trail:
+                    legs.append((0.5, trail))
+                    return legs, j, f"{first_leg_outcome}+trail"
+                if bar.high >= target2:
+                    legs.append((0.5, target2))
+                    return legs, j, f"{first_leg_outcome}+target2"
+                trail = max(trail, bar.close - TRAIL_ATR_MULT * atr14)
+                continue
+
+            # ── Phase 2: runner half vs trailing stop / target-2 ──
+            if bar.open <= trail:
+                legs.append((0.5, bar.open))
+                return legs, j, f"{first_leg_outcome}+trail_gap"
+            if bar.open >= target2:
+                legs.append((0.5, bar.open))
+                return legs, j, f"{first_leg_outcome}+target2_gap"
+            if bar.low <= trail:
+                legs.append((0.5, trail))
+                return legs, j, f"{first_leg_outcome}+trail"
+            if bar.high >= target2:
+                legs.append((0.5, target2))
+                return legs, j, f"{first_leg_outcome}+target2"
+            # No exit: ratchet the trail on the close, never downward.
+            atr14 = latest_atr(candles[: j + 1], 14)
+            trail = max(trail, bar.close - TRAIL_ATR_MULT * atr14)
+
+        # Max-hold expiry — close whatever is still open at the final bar.
+        final_close = candles[max_exit_idx].close
+        if trail is None:
+            return [(1.0, final_close)], max_exit_idx, "time"
+        legs.append((0.5, final_close))
+        return legs, max_exit_idx, f"{first_leg_outcome}+time"
+
+    def _finish(self, result: BacktestResult, ticker: str, market: Market) -> BacktestResult:
         logger.info(
             "Backtest %s:%s — %d trades, win_rate=%.1f%%, return=%.1f%%, "
-            "max_dd=%.1f%%, sharpe=%.2f (commission=%.2f%%, slippage=%.2f%%, rf=%.2f%%)",
-            market, ticker, len(trades), result.win_rate, result.total_return_pct,
-            result.max_drawdown_pct, result.sharpe_ratio,
+            "max_dd=%.1f%%, sharpe=%.2f (commission=%.2f%%, slippage=%.2f%%, "
+            "rf=%.2f%%, split_exits=%s)",
+            market, ticker, len(result.trades), result.win_rate,
+            result.total_return_pct, result.max_drawdown_pct, result.sharpe_ratio,
             self.commission_pct, self.slippage_pct, self.risk_free_rate,
+            self.split_exits,
         )
         return result

@@ -11,7 +11,7 @@ from alpha_bot.backtest import Backtester
 from alpha_bot.config import load_config, load_watchlist
 from alpha_bot.models import OrderRequest
 from alpha_bot.report import render_report
-from alpha_bot.strategy import StrategyAnalyzer
+from alpha_bot.strategy import analyzer_from_config
 from alpha_bot.utils import validate_market
 
 CONFIG_PATH = Path("config.yaml")
@@ -27,7 +27,7 @@ def handle_analyze(params: dict[str, str], serialise: Any) -> dict[str, Any]:
 
     config = load_config(CONFIG_PATH)
     provider = make_provider(source, config.data_dir)
-    analyzer = StrategyAnalyzer(config.min_score, config.min_rr)
+    analyzer = analyzer_from_config(config)
 
     report = analyze_ticker(
         analyzer, provider, ticker, market, company, language, use_llm=use_llm
@@ -59,7 +59,7 @@ def handle_scan(params: dict[str, str], serialise: Any) -> list[dict[str, Any]]:
 
     config = load_config(CONFIG_PATH)
     provider = make_provider(source, config.data_dir)
-    analyzer = StrategyAnalyzer(config.min_score, config.min_rr)
+    analyzer = analyzer_from_config(config)
     rows = load_watchlist(Path(watchlist))
 
     results = []
@@ -90,7 +90,7 @@ def handle_backtest(params: dict[str, str], serialise: Any) -> Any:
     config = load_config(CONFIG_PATH)
     provider = make_provider(source, config.data_dir)
     candles = provider.get_candles(ticker, market, lookback=320)
-    result = Backtester(StrategyAnalyzer(config.min_score, config.min_rr)).run(
+    result = Backtester(analyzer_from_config(config)).run(
         ticker, market, candles,
         provider.get_fundamentals(ticker, market),
         provider.get_catalysts(ticker, market),
@@ -114,7 +114,7 @@ def handle_queue(body: dict[str, Any], serialise: Any) -> dict[str, Any] | tuple
 
     config = load_config(CONFIG_PATH)
     provider = make_provider(source, config.data_dir)
-    analyzer = StrategyAnalyzer(config.min_score, config.min_rr)
+    analyzer = analyzer_from_config(config)
     report = analyze_ticker(
         analyzer, provider, ticker, market, None, language, use_llm=use_llm
     )

@@ -21,6 +21,7 @@ from alpha_bot.models import (
 )
 from alpha_bot.risk import build_trade_plan
 from alpha_bot.strategy.indicators import (
+    breakout_status,
     detect_vcp,
     latest_bollinger,
     latest_rsi,
@@ -78,6 +79,30 @@ class StrategyParams:
     high_rr_min_score: int = 22            # relaxed min_score when R/R qualifies
     high_rr_min_trend: int = 6             # technical_trend sub-score floor for relaxation
 
+    # Breakout confirmation gate (opt-in via config `require_breakout`).
+    # Minervini-style discipline: only buy a FRESH pivot break on expanding
+    # volume, no more than max_extension past the pivot. Off by default —
+    # buying the tight pre-pivot squeeze (scenario A1) is also a supported
+    # style, and flipping this on turns those setups into Wait.
+    require_breakout_confirmation: bool = False
+    breakout_base_window: int = 60        # bars that define the base/pivot high
+    breakout_recent_window: int = 5       # the break must have occurred within these bars
+    breakout_volume_mult: float = 1.4     # breakout-day volume ≥ this × 50-day average
+    breakout_max_extension_pct: float = 5.0  # reject entries > pivot × (1 + this%)
+
+
+def analyzer_from_config(config) -> "StrategyAnalyzer":
+    """Build a StrategyAnalyzer from an AppConfig.
+
+    The single construction path for every entry point (CLI, auto-pilot,
+    web) so config-driven strategy toggles like ``require_breakout`` can't
+    silently diverge between interfaces.
+    """
+    params = StrategyParams(
+        require_breakout_confirmation=bool(getattr(config, "require_breakout", False)),
+    )
+    return StrategyAnalyzer(config.min_score, config.min_rr, params)
+
 
 class StrategyAnalyzer:
     def __init__(
@@ -101,7 +126,15 @@ class StrategyAnalyzer:
         company_name: str | None = None,
         language: str = "ko",
         news_assessment: NewsAssessment | None = None,
+        use_live_market_data: bool = True,
     ) -> AnalysisReport:
+        """Analyze one ticker and return an `AnalysisReport`.
+
+        ``use_live_market_data`` gates every lookup of *today's* market state
+        (regime veto, benchmark leg of relative strength). Backtests MUST pass
+        False: they feed historical candles, and mixing in today's index level
+        would leak the future into past signals (look-ahead bias).
+        """
         if len(candles) < 20:
             raise StrategyError(
                 f"데이터가 너무 적습니다 ({len(candles)}개 캔들). 최소 20개가 필요합니다."
@@ -129,7 +162,8 @@ class StrategyAnalyzer:
         fundamentals_score, fundamentals_note, earnings_caution = self._score_fundamentals(fundamentals, catalysts)
         trend_score, trend_note = self._score_trend(close, sma50, sma200, candles, has_sma200, has_sma50)
         momentum_score, momentum_note = self._score_momentum(
-            rsi14, boll_width, vcp_score, volume_score, context, candles
+            rsi14, boll_width, vcp_score, volume_score, context, candles,
+            market=market, allow_live=use_live_market_data,
         )
 
         if news_assessment is not None:
@@ -165,10 +199,24 @@ class StrategyAnalyzer:
             vcp_details=vcp_details,
         )
         lang = "ko" if language.lower().startswith("ko") else "en"
-        technical = self._technical_breakdown(close, sma50, sma200, indicators, context, candles, lang)
+        technical = self._technical_breakdown(
+            close, sma50, sma200, indicators, context, candles, lang,
+            market=market, allow_live=use_live_market_data,
+        )
+        breakout = None
+        if self.params.require_breakout_confirmation:
+            breakout = breakout_status(
+                candles,
+                base_window=self.params.breakout_base_window,
+                recent_window=self.params.breakout_recent_window,
+                volume_mult=self.params.breakout_volume_mult,
+                max_extension_pct=self.params.breakout_max_extension_pct,
+            )
         signal, reason = self._final_signal(
             close, sma200, scoreboard, trade_plan.rr_ratio, lang, news_assessment, market,
             has_sma200=has_sma200,
+            use_live_market_data=use_live_market_data,
+            breakout=breakout,
         )
         catalyst_summary = self._catalyst_summary(catalysts, lang)
 
@@ -316,6 +364,8 @@ class StrategyAnalyzer:
         volume_score: int,
         context: MarketContext,
         candles: list[Candle],
+        market: Market | None = None,
+        allow_live: bool = False,
     ) -> tuple[int, str]:
         p = self.params
         score = 0
@@ -330,15 +380,29 @@ class StrategyAnalyzer:
         score += min(3, round(vcp_score / 3))
         score += volume_score
 
-        relative_return = self._relative_strength(context, candles)
+        relative_return = self._relative_strength(context, candles, market, allow_live)
         if relative_return is not None and relative_return > p.relative_strength_threshold:
             score += 1
 
         note = f"RSI {rsi14:.1f}, Bollinger width {boll_width * 100:.1f}%, VCP {vcp_score}/10"
         return min(score, 10), note
 
-    def _relative_strength(self, context: MarketContext, candles: list[Candle]) -> float | None:
+    def _relative_strength(
+        self,
+        context: MarketContext,
+        candles: list[Candle],
+        market: Market | None = None,
+        allow_live: bool = False,
+    ) -> float | None:
         """Return stock return minus benchmark return over ~3 months.
+
+        Source preference:
+          1. Explicit values in ``MarketContext`` (fixtures / backtests).
+          2. Live derivation (``allow_live`` only): stock leg from the candle
+             series, benchmark leg from the market-regime index cache
+             (S&P 500 / KOSPI, 63 trading days). The regime cache holds
+             *today's* index history, so this path is forbidden in backtests
+             — it would leak the future into historical signals.
 
         We deliberately refuse to fall back to absolute return: in a strong
         bull market every name shows positive absolute return, which would
@@ -348,18 +412,19 @@ class StrategyAnalyzer:
         """
         if context.stock_return_3m is not None and context.benchmark_return_3m is not None:
             return context.stock_return_3m - context.benchmark_return_3m
-        # Try to derive the benchmark return from the market regime cache
+        if not allow_live or market is None:
+            return None
+        stock_return = compound_return(candles, 63)
+        if stock_return is None:
+            return None
         try:
             from alpha_bot.market_regime import get_regime
-            stock_return = compound_return(candles, 63)
-            if stock_return is None:
-                return None
-            # Note: this is a best-effort estimate. Without a per-market benchmark
-            # candle series we cannot compute a precise relative return, so we
-            # require an explicit benchmark value above and otherwise abstain.
+            benchmark_return = get_regime(market).return_3m
         except Exception:
-            pass
-        return None
+            return None
+        if benchmark_return is None:
+            return None
+        return stock_return - benchmark_return
 
     def _technical_breakdown(
         self,
@@ -370,6 +435,8 @@ class StrategyAnalyzer:
         context: MarketContext,
         candles: list[Candle],
         language: str = "ko",
+        market: Market | None = None,
+        allow_live: bool = False,
     ) -> TechnicalBreakdown:
         if language == "ko":
             above_200 = "위" if close > sma200 else "아래"
@@ -403,7 +470,7 @@ class StrategyAnalyzer:
                 risk_parts.append("price below 50-day support")
             risk_factors = ", ".join(risk_parts) if risk_parts else "watch for failed breakout and 50-day SMA loss"
 
-        rel = self._relative_strength(context, candles)
+        rel = self._relative_strength(context, candles, market, allow_live)
         if language == "ko":
             if rel is None:
                 relative = f"섹터 테마: {context.sector_theme}; 상대강도 데이터 미확보."
@@ -430,24 +497,64 @@ class StrategyAnalyzer:
         news: NewsAssessment | None = None,
         market: Market | None = None,
         has_sma200: bool = True,
+        use_live_market_data: bool = True,
+        breakout: tuple[str, str] | None = None,
     ) -> tuple[Signal, str]:
         p = self.params
+
+        def msg(ko: str, en: str) -> str:
+            return ko if language == "ko" else en
+
         # LLM veto: severe negative news blocks new entries regardless of score.
         if news and news.severity == "high" and news.sentiment == "negative":
-            if language == "ko":
-                return "Hold Off", f"LLM이 심각한 악재 감지: {news.reasoning or '뉴스 톤 매우 부정적'}"
-            return "Hold Off", f"LLM detected severe negative news: {news.reasoning or 'tone strongly negative'}"
+            return "Hold Off", msg(
+                f"LLM이 심각한 악재 감지: {news.reasoning or '뉴스 톤 매우 부정적'}",
+                f"LLM detected severe negative news: {news.reasoning or 'tone strongly negative'}",
+            )
         # CANSLIM "M" veto: broad index below SMA200 blocks new buys.
-        if market:
+        # Live-only: get_regime() fetches TODAY's index, which must never
+        # gate a historical (backtest) signal — that would be look-ahead.
+        if market and use_live_market_data:
             try:
                 from alpha_bot.market_regime import get_regime
                 regime = get_regime(market)
                 if not regime.is_bullish:
-                    if language == "ko":
-                        return "Hold Off", f"시장 레짐 약세: {regime.reason}"
-                    return "Hold Off", f"Market regime bearish: {regime.reason}"
+                    return "Hold Off", msg(
+                        f"시장 레짐 약세: {regime.reason}",
+                        f"Market regime bearish: {regime.reason}",
+                    )
             except Exception:
                 pass  # fail-open
+
+        # Master trend filter.
+        if close < sma200:
+            if has_sma200:
+                return "Hold Off", msg(
+                    "현재가가 200일선 아래에 있어 마스터 추세 필터에 의해 신규 매수가 차단됩니다.",
+                    "Price is below the 200-day SMA, so the master trend filter blocks new buys.",
+                )
+            return "Wait", msg(
+                f"단기 이동평균({round(sma200,2)}) 아래 — 200일 데이터 부족으로 참고용 (데이터 확보 후 재분석 권장)",
+                f"Below short-term SMA ({round(sma200,2)}) — insufficient history for 200-day filter; re-analyze when more data is available.",
+            )
+
+        # Breakout confirmation gate (opt-in): only take a fresh, volume-
+        # confirmed pivot break — not mid-base, not extended, not on quiet
+        # volume. "insufficient" passes through (graceful degradation).
+        if breakout is not None:
+            b_status, b_detail = breakout
+            if b_status not in {"confirmed", "insufficient"}:
+                labels = {
+                    "no_breakout": ("피벗 미돌파 — 베이스 내 대기", "no pivot breakout yet (still basing)"),
+                    "extended": ("피벗 대비 과확장 — 추격 매수 차단", "extended past pivot (no chasing)"),
+                    "low_volume": ("돌파 거래량 미달", "breakout volume not confirmed"),
+                }
+                ko_label, en_label = labels.get(b_status, (b_status, b_status))
+                return "Wait", msg(
+                    f"돌파 확인 게이트: {ko_label} ({b_detail})",
+                    f"Breakout gate: {en_label} ({b_detail})",
+                )
+
         # Score-adjusted R/R floor: high-conviction setups get a relaxed minimum.
         # A stock like SK Hynix near resistance with exceptional fundamentals
         # structurally compresses achievable R/R — penalising it equally with a
@@ -469,70 +576,55 @@ class StrategyAnalyzer:
         if rr_relaxed:
             effective_min_score = min(self.min_score, p.high_rr_min_score)
 
-        if language == "ko":
-            if has_sma200 and close < sma200:
-                return "Hold Off", "현재가가 200일선 아래에 있어 마스터 추세 필터에 의해 신규 매수가 차단됩니다."
-            if not has_sma200 and close < sma200:
-                return "Wait", f"단기 이동평균({round(sma200,2)}) 아래 — 200일 데이터 부족으로 참고용 (데이터 확보 후 재분석 권장)"
-            if rr_ratio < effective_min_rr:
-                if effective_min_rr < self.min_rr:
-                    return "Wait", (
-                        f"1차 목표 R/R이 {rr_ratio:.2f}:1로, 고확신 셋업 완화 기준 "
-                        f"{effective_min_rr:.1f}:1에도 미달합니다. (기본 기준 {self.min_rr:.1f}:1)"
-                    )
-                return "Wait", f"1차 목표 R/R이 {rr_ratio:.2f}:1로, 최소 기준 {self.min_rr:.1f}:1에 미달합니다."
-            if scoreboard.total < effective_min_score:
-                if rr_relaxed and effective_min_score < self.min_score:
-                    return "Wait", (
-                        f"종합 점수가 {scoreboard.total}/30점으로, 높은 R/R({rr_ratio:.2f}:1) 완화 기준 "
-                        f"{effective_min_score}/30에도 미달합니다. (기본 기준 {self.min_score}/30)"
-                    )
-                return "Wait", f"종합 점수가 {scoreboard.total}/30점으로, 매수 기준 {self.min_score}/30에 미달합니다."
-            if scoreboard.total >= p.strong_buy_score and rr_ratio >= p.strong_buy_rr:
-                return "Strong Buy", "추세·점수·R/R이 모두 정렬된 고품질 셋업입니다."
+        if rr_ratio < effective_min_rr:
             if effective_min_rr < self.min_rr:
-                return "Buy", (
-                    f"고확신 셋업 (점수 {scoreboard.total}/30): R/R {rr_ratio:.2f}:1이 완화 기준 "
-                    f"{effective_min_rr:.1f}:1을 충족합니다."
+                return "Wait", msg(
+                    f"1차 목표 R/R이 {rr_ratio:.2f}:1로, 고확신 셋업 완화 기준 "
+                    f"{effective_min_rr:.1f}:1에도 미달합니다. (기본 기준 {self.min_rr:.1f}:1)",
+                    f"Target-1 R/R is {rr_ratio:.2f}:1, below the high-conviction relaxed floor "
+                    f"of {effective_min_rr:.1f}:1 (base min {self.min_rr:.1f}:1).",
                 )
+            return "Wait", msg(
+                f"1차 목표 R/R이 {rr_ratio:.2f}:1로, 최소 기준 {self.min_rr:.1f}:1에 미달합니다.",
+                f"Target-1 R/R is {rr_ratio:.2f}:1, below the {self.min_rr:.1f}:1 minimum.",
+            )
+
+        if scoreboard.total < effective_min_score:
             if rr_relaxed and effective_min_score < self.min_score:
-                return "Buy", (
-                    f"높은 손익비 셋업 (R/R {rr_ratio:.2f}:1): 점수 {scoreboard.total}/30이 "
-                    f"완화 기준 {effective_min_score}/30을 충족합니다. (기본 기준 {self.min_score}/30)"
+                return "Wait", msg(
+                    f"종합 점수가 {scoreboard.total}/30점으로, 높은 R/R({rr_ratio:.2f}:1) 완화 기준 "
+                    f"{effective_min_score}/30에도 미달합니다. (기본 기준 {self.min_score}/30)",
+                    f"Total score {scoreboard.total}/30 is below the high-R/R relaxed floor of "
+                    f"{effective_min_score}/30 (R/R {rr_ratio:.2f}:1; base min {self.min_score}/30).",
                 )
-            return "Buy", "추세 필터, 퀀트 점수, R/R 모두 v1 진입 조건을 충족합니다."
-        else:
-            if has_sma200 and close < sma200:
-                return "Hold Off", "Price is below the 200-day SMA, so the master trend filter blocks new buys."
-            if not has_sma200 and close < sma200:
-                return "Wait", f"Below short-term SMA ({round(sma200,2)}) — insufficient history for 200-day filter; re-analyze when more data is available."
-            if rr_ratio < effective_min_rr:
-                if effective_min_rr < self.min_rr:
-                    return "Wait", (
-                        f"Target-1 R/R is {rr_ratio:.2f}:1, below the high-conviction relaxed floor "
-                        f"of {effective_min_rr:.1f}:1 (base min {self.min_rr:.1f}:1)."
-                    )
-                return "Wait", f"Target-1 R/R is {rr_ratio:.2f}:1, below the {self.min_rr:.1f}:1 minimum."
-            if scoreboard.total < effective_min_score:
-                if rr_relaxed and effective_min_score < self.min_score:
-                    return "Wait", (
-                        f"Total score {scoreboard.total}/30 is below the high-R/R relaxed floor of "
-                        f"{effective_min_score}/30 (R/R {rr_ratio:.2f}:1; base min {self.min_score}/30)."
-                    )
-                return "Wait", f"Total score is {scoreboard.total}/30, below the {self.min_score}/30 buy threshold."
-            if scoreboard.total >= p.strong_buy_score and rr_ratio >= p.strong_buy_rr:
-                return "Strong Buy", "Trend, score, and R/R are all aligned for a high-quality setup."
-            if effective_min_rr < self.min_rr:
-                return "Buy", (
-                    f"High-conviction setup (score {scoreboard.total}/30): R/R {rr_ratio:.2f}:1 "
-                    f"meets the relaxed {effective_min_rr:.1f}:1 floor."
-                )
-            if rr_relaxed and effective_min_score < self.min_score:
-                return "Buy", (
-                    f"High R/R setup (R/R {rr_ratio:.2f}:1): score {scoreboard.total}/30 meets "
-                    f"the relaxed {effective_min_score}/30 floor (base min {self.min_score}/30)."
-                )
-            return "Buy", "Trend filter, quant score, and R/R all meet the v1 entry rules."
+            return "Wait", msg(
+                f"종합 점수가 {scoreboard.total}/30점으로, 매수 기준 {self.min_score}/30에 미달합니다.",
+                f"Total score is {scoreboard.total}/30, below the {self.min_score}/30 buy threshold.",
+            )
+
+        if scoreboard.total >= p.strong_buy_score and rr_ratio >= p.strong_buy_rr:
+            return "Strong Buy", msg(
+                "추세·점수·R/R이 모두 정렬된 고품질 셋업입니다.",
+                "Trend, score, and R/R are all aligned for a high-quality setup.",
+            )
+        if effective_min_rr < self.min_rr:
+            return "Buy", msg(
+                f"고확신 셋업 (점수 {scoreboard.total}/30): R/R {rr_ratio:.2f}:1이 완화 기준 "
+                f"{effective_min_rr:.1f}:1을 충족합니다.",
+                f"High-conviction setup (score {scoreboard.total}/30): R/R {rr_ratio:.2f}:1 "
+                f"meets the relaxed {effective_min_rr:.1f}:1 floor.",
+            )
+        if rr_relaxed and effective_min_score < self.min_score:
+            return "Buy", msg(
+                f"높은 손익비 셋업 (R/R {rr_ratio:.2f}:1): 점수 {scoreboard.total}/30이 "
+                f"완화 기준 {effective_min_score}/30을 충족합니다. (기본 기준 {self.min_score}/30)",
+                f"High R/R setup (R/R {rr_ratio:.2f}:1): score {scoreboard.total}/30 meets "
+                f"the relaxed {effective_min_score}/30 floor (base min {self.min_score}/30).",
+            )
+        return "Buy", msg(
+            "추세 필터, 퀀트 점수, R/R 모두 v1 진입 조건을 충족합니다.",
+            "Trend filter, quant score, and R/R all meet the v1 entry rules.",
+        )
 
     def _catalyst_summary(self, catalysts: list[Catalyst], language: str = "ko") -> str:
         if not catalysts:

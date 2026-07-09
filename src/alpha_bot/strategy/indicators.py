@@ -165,6 +165,75 @@ def detect_vcp(candles: list[Candle], lookback: int = 60, chunks: int = 3) -> tu
     return "no clear VCP yet", score, details
 
 
+def breakout_status(
+    candles: list[Candle],
+    base_window: int = 60,
+    recent_window: int = 5,
+    volume_mult: float = 1.4,
+    max_extension_pct: float = 5.0,
+) -> tuple[str, str]:
+    """Classify the latest close relative to its base pivot.
+
+    The pivot is the highest high of the ``base_window`` bars that precede
+    the last ``recent_window`` bars (excluding them keeps the breakout move
+    itself from inflating its own pivot). Returns ``(status, detail)``:
+
+      * ``confirmed``    — close is above the pivot, the first close above it
+                           happened within ``recent_window`` bars, that day's
+                           volume was ≥ ``volume_mult`` × its 50-day average,
+                           and price hasn't run more than
+                           ``max_extension_pct`` past the pivot.
+      * ``no_breakout``  — close is still at/below the pivot (basing).
+      * ``extended``     — close is above pivot × (1 + max_extension_pct%):
+                           chasing; wait for a new base.
+      * ``low_volume``   — pivot cleared but without volume expansion —
+                           breakouts on quiet volume fail disproportionately.
+      * ``insufficient`` — not enough history to judge (callers should treat
+                           this as pass-through, consistent with the
+                           project-wide graceful-degradation rule).
+    """
+    need = base_window + recent_window
+    if len(candles) < need:
+        return "insufficient", f"need {need} bars, got {len(candles)}"
+    base = candles[-(base_window + recent_window):-recent_window]
+    pivot = max(candle.high for candle in base)
+    close = candles[-1].close
+    if pivot <= 0:
+        return "insufficient", "invalid pivot"
+    if close <= pivot:
+        return "no_breakout", f"close {close:.2f} ≤ pivot {pivot:.2f}"
+    extension_pct = (close / pivot - 1) * 100
+    if extension_pct > max_extension_pct:
+        return "extended", (
+            f"close {close:.2f} is {extension_pct:.1f}% past pivot {pivot:.2f} "
+            f"(max {max_extension_pct:.1f}%)"
+        )
+    # Locate the breakout day: first of the recent bars to CLOSE above the pivot.
+    breakout_idx = None
+    for offset, candle in enumerate(candles[-recent_window:]):
+        if candle.close > pivot:
+            breakout_idx = len(candles) - recent_window + offset
+            break
+    if breakout_idx is None:
+        # Close is above pivot but no recent close was — intrabar-only state;
+        # treat as not yet broken out.
+        return "no_breakout", f"no close above pivot {pivot:.2f} in last {recent_window} bars"
+    volume_history = [c.volume for c in candles[max(0, breakout_idx - 50):breakout_idx]]
+    if not volume_history:
+        return "insufficient", "no volume history before breakout bar"
+    avg_volume = sum(volume_history) / len(volume_history)
+    breakout_volume = candles[breakout_idx].volume
+    if avg_volume > 0 and breakout_volume < volume_mult * avg_volume:
+        return "low_volume", (
+            f"breakout-day volume {breakout_volume / avg_volume:.2f}× avg "
+            f"(need ≥ {volume_mult:.1f}×)"
+        )
+    return "confirmed", (
+        f"pivot {pivot:.2f} cleared +{extension_pct:.1f}%, "
+        f"volume {breakout_volume / avg_volume:.2f}× avg"
+    )
+
+
 def volume_accumulation_summary(candles: list[Candle], lookback: int = 20) -> tuple[int, str]:
     if len(candles) < lookback + 1:
         return 0, "insufficient volume history"

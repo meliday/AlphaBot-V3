@@ -23,6 +23,11 @@ _STOP_MAX_RISK = 0.07
 _STOP_MIN_RISK = 0.025
 _ATR_MULT = 2.0  # Wilder/Minervini standard
 
+# Trailing-stop distance for the post-target-1 runner half. Shared by the
+# live position manager and the backtester so simulated exits stay in sync
+# with production behavior.
+TRAIL_ATR_MULT = 2.0
+
 
 def build_trade_plan(candles: list[Candle], sma50: float, min_rr: float = 1.5) -> TradePlan:
     if len(candles) < 60:
