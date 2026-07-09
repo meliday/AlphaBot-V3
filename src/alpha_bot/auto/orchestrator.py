@@ -19,6 +19,7 @@ from typing import Callable
 
 from alpha_bot.approval import ApprovalQueue
 from alpha_bot.auto.analysis import analyze_ticker, make_broker, make_provider
+from alpha_bot.auto.guards import daily_loss_exceeded, kill_switch_active
 from alpha_bot.auto.position_manager import (
     count_open_positions,
     find_held_buy,
@@ -27,11 +28,12 @@ from alpha_bot.auto.position_manager import (
     should_force_exit,
     trigger_forced_exit,
 )
-from alpha_bot.auto.sizing import compute_position_size
+from alpha_bot.auto.sizing import compute_position_size, usable_cash
 from alpha_bot.config import AppConfig, load_watchlist
 from alpha_bot.market_hours import market_status
 from alpha_bot.market_regime import get_regime
 from alpha_bot.models import OrderRequest
+from alpha_bot.notify import notify
 from alpha_bot.utils import validate_market
 
 logger = logging.getLogger(__name__)
@@ -63,8 +65,8 @@ def run_auto_iteration(
 
     say = log or (lambda msg: logger.info(msg))
     provider = make_provider(opts.source, config.data_dir)
-    from alpha_bot.strategy import StrategyAnalyzer
-    analyzer = StrategyAnalyzer(config.min_score, config.min_rr)
+    from alpha_bot.strategy import analyzer_from_config
+    analyzer = analyzer_from_config(config)
     queue = ApprovalQueue(config.approval_queue)
     broker = make_broker(opts.broker_name)
 
@@ -77,6 +79,18 @@ def run_auto_iteration(
             )
     except Exception as exc:
         logger.warning("Order sync failed: %s", exc)
+
+    # ── Cancel limit orders that sat unfilled past the freshness window. ──
+    # A stale limit buy can fill hours later at a price whose setup no
+    # longer exists; kill it and let the next scan re-evaluate.
+    try:
+        for order in queue.cancel_stale_orders(broker, config.stale_order_minutes):
+            say(
+                f"  🗑️ {order.request.market}:{order.request.ticker} "
+                f"미체결 {config.stale_order_minutes}분 초과 → 주문 취소 ({order.id})"
+            )
+    except Exception as exc:
+        logger.warning("Stale-order sweep failed: %s", exc)
 
     # ── Reconcile queue against actual broker positions ──
     # Catches cases where the user manually sold a bot-held name via the broker
@@ -99,6 +113,18 @@ def run_auto_iteration(
         logger.exception("Position management failed")
         say(f"⚠️ 포지션 모니터링 실패: {exc}")
 
+    # ── Kill switch: block ALL new buys while the file exists. ──
+    # Exit management above still ran — held positions stay protected even
+    # (especially) while the operator has pulled the emergency brake.
+    kill_reason = kill_switch_active()
+    if kill_reason:
+        say(f"🛑 킬스위치 활성 — 신규 매수 전면 중단 ({kill_reason})")
+        notify(
+            f"🛑 AlphaBot 킬스위치 활성: {kill_reason}\n신규 매수 중단, 보유 포지션 관리는 계속됩니다.",
+            dedupe_key="kill_switch",
+        )
+        return
+
     open_count = count_open_positions(queue)
     if open_count >= config.max_positions:
         say(
@@ -112,6 +138,7 @@ def run_auto_iteration(
 
     market_cache: dict[str, bool] = {}
     regime_cache: dict[str, bool] = {}
+    loss_breaker_cache: dict[str, bool] = {}
     for row in rows:
         if open_count >= config.max_positions:
             say(f"⏸️ max_positions({config.max_positions}) 도달, 잔여 종목 스킵")
@@ -138,6 +165,22 @@ def run_auto_iteration(
             if not regime.is_bullish:
                 say(f"🐻 {market} 레짐 약세: {regime.reason}")
         if not regime_cache[market]:
+            continue
+
+        # ── Daily-loss circuit breaker: stop digging once today's realized
+        # losses hit the configured share of the account. ──
+        if market not in loss_breaker_cache:
+            tripped, detail = daily_loss_exceeded(
+                queue, broker, market, config.daily_loss_limit_pct
+            )
+            loss_breaker_cache[market] = tripped
+            if tripped:
+                say(f"🚧 {market} 일일 손실 한도 도달 — 신규 매수 중단 ({detail})")
+                notify(
+                    f"🚧 AlphaBot 서킷브레이커: {market} 신규 매수 중단\n{detail}",
+                    dedupe_key=f"daily_loss:{market}",
+                )
+        if loss_breaker_cache[market]:
             continue
 
         try:
@@ -185,6 +228,7 @@ def run_auto_iteration(
                     entry_price,
                     report.trade_plan.stop_loss,
                     config.risk_per_trade_pct,
+                    max_position_pct=config.max_position_pct,
                 )
                 say(f"  📐 {ticker} 사이징: {quantity}주 — {note}")
                 if quantity <= 0:
@@ -205,15 +249,24 @@ def run_auto_iteration(
                 logger.debug("Pre-flight balance query failed for %s: %s", market, exc)
                 bal = None
             if bal is not None:
-                available = bal.cash
-                if available <= 0 and bal.total_value > bal.securities_value:
-                    available = max(0.0, bal.total_value - bal.securities_value)
+                available = usable_cash(bal)
                 if estimated_cost > available:
                     say(
                         f"  💸 {ticker} 현금 부족: 필요 ~{estimated_cost:.0f}{bal.currency}, "
                         f"가용 {available:.0f}{bal.currency} — 매수 건너뜀"
                     )
                     continue
+                # Position-size cap also guards the fixed-quantity path — a
+                # fat-fingered --quantity must not concentrate the account.
+                if config.max_position_pct > 0 and bal.total_value > 0:
+                    budget = bal.total_value * (config.max_position_pct / 100.0)
+                    if estimated_cost > budget:
+                        say(
+                            f"  🧢 {ticker} 포지션 상한 초과: 필요 ~{estimated_cost:.0f}{bal.currency} "
+                            f"> 한도 {budget:.0f}{bal.currency} "
+                            f"({config.max_position_pct:.0f}% of 총평가) — 매수 건너뜀"
+                        )
+                        continue
 
             say(f"  ➡️ {ticker} 매수 신호 → {opts.broker_name} 주문 생성 ({quantity}주)")
             order = queue.enqueue(
@@ -242,6 +295,12 @@ def run_auto_iteration(
                 say(
                     f"  ✅ {ticker} 주문 성공 (id={approved.id}, "
                     f"broker_ref={result.broker_order_id})"
+                )
+                notify(
+                    f"✅ AlphaBot 매수 주문: {market}:{ticker} {quantity}주 @ {entry_price} "
+                    f"({report.signal}, score {report.scoreboard.total}/30, "
+                    f"stop {report.trade_plan.stop_loss:.2f})",
+                    dedupe_key=f"buy:{market}:{ticker}:{approved.id}",
                 )
                 # 거래 직후 예수금 스냅샷 기록
                 try:

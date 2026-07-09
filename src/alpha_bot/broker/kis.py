@@ -339,6 +339,62 @@ class KisBroker:
         }
         return "/uapi/overseas-stock/v1/trading/order", tr_id, payload
 
+    # ── Order cancellation ───────────────────────────────────────────
+
+    def cancel_order(
+        self, broker_order_id: str, market: Market, ticker: str, quantity: int
+    ) -> OrderResult:
+        """Cancel the unfilled remainder of a working order (전량 취소).
+
+        Uses the KIS 정정취소 endpoints with RVSE_CNCL_DVSN_CD="02" (cancel).
+        NOTE: verify TR ids/payload once against 모의투자 before relying on
+        this in live mode — KIS occasionally revs field requirements.
+        """
+        if not broker_order_id:
+            raise BrokerError("cancel_order requires a broker_order_id.")
+        if market == "KR":
+            tr_id = "VTTC0803U" if self.settings.mode == "paper" else "TTTC0803U"
+            endpoint = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
+            payload = {
+                "CANO": self.settings.account_no,
+                "ACNT_PRDT_CD": self.settings.account_product,
+                "KRX_FWDG_ORD_ORGNO": "",
+                "ORGN_ODNO": broker_order_id,
+                "ORD_DVSN": "00",
+                "RVSE_CNCL_DVSN_CD": "02",  # 02 = cancel
+                "ORD_QTY": "0",
+                "ORD_UNPR": "0",
+                "QTY_ALL_ORD_YN": "Y",  # cancel the entire unfilled remainder
+            }
+        elif market == "US":
+            tr_id = "VTTT1004U" if self.settings.mode == "paper" else "TTTT1004U"
+            endpoint = "/uapi/overseas-stock/v1/trading/order-rvsecncl"
+            payload = {
+                "CANO": self.settings.account_no,
+                "ACNT_PRDT_CD": self.settings.account_product,
+                "OVRS_EXCG_CD": infer_us_exchange_code(ticker),
+                "PDNO": ticker,
+                "ORGN_ODNO": broker_order_id,
+                "RVSE_CNCL_DVSN_CD": "02",
+                "ORD_QTY": str(quantity),
+                "OVRS_ORD_UNPR": "0",
+                "ORD_SVR_DVSN_CD": "0",
+            }
+        else:
+            raise BrokerError(f"Unsupported market: {market}")
+
+        logger.info(
+            "Cancelling KIS order %s (%s:%s qty=%d)",
+            broker_order_id, market, ticker, quantity,
+        )
+        raw = self.client.post(endpoint, payload, tr_id=tr_id, include_auth=True, include_hash=True)
+        accepted = str(raw.get("rt_cd", "0")) == "0"
+        message = str(raw.get("msg1", raw.get("message", "")))
+        output = raw.get("output", {}) if isinstance(raw.get("output"), dict) else {}
+        cancel_id = str(output.get("ODNO") or output.get("odno") or broker_order_id)
+        logger.info("KIS cancel result: accepted=%s id=%s msg=%s", accepted, cancel_id, message)
+        return OrderResult(self.name, accepted, cancel_id, message, raw)
+
     # ── Account / balance queries ────────────────────────────────────
 
     def get_cash_balance(self, market: Market) -> AccountBalance:

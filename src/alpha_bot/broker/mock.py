@@ -125,6 +125,23 @@ class MockBroker:
         self._write_ledger(rows)
         return OrderResult(self.name, True, broker_order_id, "Position injected.", row)
 
+    def cancel_order(
+        self, broker_order_id: str, market: Market, ticker: str, quantity: int
+    ) -> OrderResult:
+        """Mark a ledger order cancelled. Cancelled rows stop counting toward
+        cash, positions, and fills — mirroring a real broker voiding the
+        unfilled remainder."""
+        rows = self._read()
+        for row in rows:
+            if row.get("broker_order_id") == broker_order_id:
+                if row.get("cancelled"):
+                    return OrderResult(self.name, True, broker_order_id, "Already cancelled.", row)
+                row["cancelled"] = True
+                row["cancelled_at"] = utc_now_iso()
+                self._write_ledger(rows)
+                return OrderResult(self.name, True, broker_order_id, "Mock order cancelled.", row)
+        return OrderResult(self.name, False, broker_order_id, "Order not found in ledger.", {})
+
     # ── State queries ───────────────────────────────────────────────
 
     def get_cash_balance(self, market: Market) -> AccountBalance:
@@ -133,6 +150,8 @@ class MockBroker:
         cash = starting
         for row in self._read():
             if row.get("market") != market:
+                continue
+            if row.get("cancelled"):
                 continue
             if row.get("injected"):
                 # Pre-existing holdings shouldn't draw down the starting cash;
@@ -162,7 +181,10 @@ class MockBroker:
         )
 
     def get_positions(self, market: Market) -> list[Position]:
-        rows = [row for row in self._read() if row.get("market") == market]
+        rows = [
+            row for row in self._read()
+            if row.get("market") == market and not row.get("cancelled")
+        ]
         holdings: dict[str, dict] = {}
         for row in rows:
             ticker = str(row["ticker"])
@@ -202,6 +224,16 @@ class MockBroker:
     ) -> OrderFill:
         for row in self._read():
             if row.get("broker_order_id") == broker_order_id:
+                if row.get("cancelled"):
+                    return OrderFill(
+                        broker_order_id=broker_order_id,
+                        status="cancelled",
+                        filled_quantity=0,
+                        ordered_quantity=ordered_quantity,
+                        avg_fill_price=None,
+                        message="Mock order cancelled",
+                        raw=row,
+                    )
                 qty = int(row.get("quantity", ordered_quantity))
                 return OrderFill(
                     broker_order_id=broker_order_id,

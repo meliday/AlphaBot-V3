@@ -6,6 +6,7 @@ import os
 import threading
 import uuid
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from alpha_bot.broker.base import Broker
@@ -173,6 +174,79 @@ class ApprovalQueue:
             if dirty:
                 self._write(orders)
         return changed
+
+    def cancel_stale_orders(
+        self, broker: Broker, max_age_minutes: int
+    ) -> list[OrderCandidate]:
+        """Cancel limit orders that have sat unfilled for too long.
+
+        A limit buy placed at close×1.01 that gaps away can linger all
+        session and then fill at a now-stale price when the market dips back
+        — the setup that justified the entry no longer exists by then. We
+        cancel any ``submitted`` order with zero fills older than
+        ``max_age_minutes`` so the next iteration re-evaluates from scratch.
+
+        Partially-filled orders are left alone: cancelling the remainder
+        while shares are already held would strand quantity accounting
+        (P1 keeps this conservative; revisit with OCO support).
+
+        Returns the orders that were successfully cancelled.
+        """
+        if max_age_minutes <= 0 or not hasattr(broker, "cancel_order"):
+            return []
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age_minutes)
+        cancelled: list[OrderCandidate] = []
+        with self._lock:
+            orders = self.list_orders()
+        for order in orders:
+            if order.status != "submitted":
+                continue
+            if (order.filled_quantity or 0) > 0:
+                continue
+            if order.request.order_type != "limit":
+                continue
+            if not order.broker_order_id:
+                continue
+            stamp = order.submitted_at or order.created_at
+            try:
+                submitted = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                continue
+            if submitted.tzinfo is None:
+                submitted = submitted.replace(tzinfo=timezone.utc)
+            if submitted > cutoff:
+                continue
+            try:
+                result = broker.cancel_order(
+                    order.broker_order_id,
+                    order.request.market,
+                    order.request.ticker,
+                    order.request.quantity,
+                )
+            except Exception as exc:
+                logger.warning("Stale-cancel failed for %s: %s", order.id, exc)
+                continue
+            if not result.accepted:
+                logger.warning(
+                    "Stale-cancel rejected for %s: %s", order.id, result.message
+                )
+                continue
+            updated = replace(
+                order,
+                status="cancelled",
+                broker_message=f"스테일 주문 자동 취소 ({max_age_minutes}분 초과): {result.message}",
+                last_synced_at=utc_now_iso(),
+            )
+            try:
+                self.update(updated)
+                cancelled.append(updated)
+                logger.info(
+                    "Cancelled stale order %s (%s:%s, submitted %s)",
+                    order.id, order.request.market, order.request.ticker, stamp,
+                )
+            except Exception as exc:
+                logger.warning("Stale-cancel bookkeeping failed for %s: %s", order.id, exc)
+        return cancelled
 
     def update(self, order: OrderCandidate) -> None:
         """Persist a single in-memory ``OrderCandidate`` back to disk."""

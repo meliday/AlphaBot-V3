@@ -30,6 +30,15 @@ class DataProvider(Protocol):
     def get_market_context(self, ticker: str, market: Market) -> MarketContext:
         ...
 
+    def get_current_price(self, ticker: str, market: Market) -> float | None:
+        """Real-time (or freshest available) price; None when unavailable.
+
+        Exit monitoring prefers this over the last daily candle — a daily
+        close lags an intraday crash by hours, which turns a planned −7%
+        stop into a much larger realized loss.
+        """
+        ...
+
 
 class FixtureDataProvider:
     """Reads user-maintained CSV/JSON data from a local directory."""
@@ -68,6 +77,13 @@ class FixtureDataProvider:
         if not path.exists():
             return MarketContext()
         return MarketContext.from_mapping(json.loads(path.read_text(encoding="utf-8")))
+
+    def get_current_price(self, ticker: str, market: Market) -> float | None:
+        try:
+            candles = self.get_candles(ticker, market, lookback=5)
+        except DataError:
+            return None
+        return candles[-1].close if candles else None
 
 
 class SyntheticDataProvider:
@@ -140,6 +156,10 @@ class SyntheticDataProvider:
             broker_coverage="manual verification required",
         )
 
+    def get_current_price(self, ticker: str, market: Market) -> float | None:
+        candles = self.get_candles(ticker, market, lookback=5)
+        return candles[-1].close if candles else None
+
 
 class KisPriceDataProvider:
     """KIS REST daily-price provider with local fundamental/news fallback."""
@@ -185,6 +205,36 @@ class KisPriceDataProvider:
 
     def get_market_context(self, ticker: str, market: Market) -> MarketContext:
         return self.fallback.get_market_context(ticker, market) if self.fallback else MarketContext()
+
+    def get_current_price(self, ticker: str, market: Market) -> float | None:
+        """Live quote via KIS. Returns None on any failure so callers can
+        fall back to the last daily close."""
+        try:
+            if market == "KR":
+                raw = self.client.get(
+                    "/uapi/domestic-stock/v1/quotations/inquire-price",
+                    {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": ticker},
+                    tr_id="FHKST01010100",
+                )
+                output = raw.get("output", {}) or {}
+                price = float(output.get("stck_prpr") or 0)
+                return price if price > 0 else None
+            if market == "US":
+                from alpha_bot.utils import _US_EXCD_CACHE
+                excd_map = {"NASD": "NAS", "NYSE": "NYS", "AMEX": "AMS"}
+                cached = _US_EXCD_CACHE.get(ticker.upper())
+                api_excd = excd_map.get(cached or infer_us_exchange_code(ticker), "NAS")
+                raw = self.client.get(
+                    "/uapi/overseas-price/v1/quotations/price",
+                    {"AUTH": "", "EXCD": api_excd, "SYMB": ticker.upper()},
+                    tr_id="HHDFS00000300",
+                )
+                output = raw.get("output", {}) or {}
+                price = float(output.get("last") or 0)
+                return price if price > 0 else None
+        except Exception as exc:
+            logger.warning("Live quote failed for %s:%s: %s", market, ticker, exc)
+        return None
 
     def _get_domestic_candles(self, ticker: str, lookback: int) -> list[Candle]:
         end_date = date.today()

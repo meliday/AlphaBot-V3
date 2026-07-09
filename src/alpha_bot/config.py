@@ -29,6 +29,22 @@ class AppConfig:
     risk_per_trade_pct: float = 1.0
     min_score: int = 24
     min_rr: float = 1.5
+    # ── Risk guards (P1 hardening) ──
+    # Cap any single position at this % of account value. Without this, a
+    # tight stop (2.5%) with 1% risk sizing could put ~40% of the account
+    # into one name. 0 disables the cap.
+    max_position_pct: float = 20.0
+    # Circuit breaker: once today's realized losses reach this % of account
+    # value (per market), stop opening new positions until tomorrow.
+    # 0 disables the breaker.
+    daily_loss_limit_pct: float = 3.0
+    # Cancel limit orders still unfilled after this many minutes so they
+    # can't fill at a stale price later in the session. 0 disables.
+    stale_order_minutes: int = 60
+    # Opt-in Minervini-style entry discipline: only buy a fresh pivot break
+    # on expanding volume (see StrategyParams.require_breakout_confirmation).
+    # Off by default — the pre-pivot squeeze entry is also a supported style.
+    require_breakout: bool = False
 
 
 def load_dotenv(path: Path = Path(".env")) -> None:
@@ -64,6 +80,10 @@ def load_config(path: Path = Path("config.yaml")) -> AppConfig:
         risk_per_trade_pct=float(values.get("risk_per_trade_pct", 1.0)),
         min_score=int(values.get("min_score", 24)),
         min_rr=float(values.get("min_rr", 1.5)),
+        max_position_pct=float(values.get("max_position_pct", 20.0)),
+        daily_loss_limit_pct=float(values.get("daily_loss_limit_pct", 3.0)),
+        stale_order_minutes=int(values.get("stale_order_minutes", 60)),
+        require_breakout=bool(values.get("require_breakout", False)),
     )
 
 

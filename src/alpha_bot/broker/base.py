@@ -28,3 +28,9 @@ class Broker(Protocol):
         self, broker_order_id: str, market: Market, ordered_quantity: int
     ) -> OrderFill:
         ...
+
+    def cancel_order(
+        self, broker_order_id: str, market: Market, ticker: str, quantity: int
+    ) -> OrderResult:
+        """Cancel the unfilled remainder of a working order."""
+        ...
