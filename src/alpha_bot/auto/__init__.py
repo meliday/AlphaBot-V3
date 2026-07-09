@@ -22,6 +22,7 @@ from alpha_bot.auto.position_manager import (
     find_held_buy,
     manage_open_positions,
     reconcile_queue_with_broker,
+    remaining_quantity,
     should_force_exit,
     trigger_forced_exit,
 )
@@ -40,6 +41,7 @@ __all__ = [
     "find_held_buy",
     "manage_open_positions",
     "reconcile_queue_with_broker",
+    "remaining_quantity",
     "should_force_exit",
     "trigger_forced_exit",
     # sizing

@@ -269,6 +269,13 @@ class OrderCandidate:
     last_synced_at: str | None = None
     exit_order_id: str | None = None
     exit_reason: str | None = None
+    # Scale-out support: sells that reduce the position without closing it
+    # (target-1 half-exit). The position is only "closed" when exit_order_id
+    # fills; partial exits shrink the remaining quantity.
+    partial_exit_ids: list[str] = field(default_factory=list)
+    # Ratcheting trailing stop for the runner half after a target-1 scale-out.
+    # Only ever moves up; floored at breakeven (avg_fill_price).
+    trail_stop: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -297,6 +304,8 @@ class OrderCandidate:
             "last_synced_at": self.last_synced_at,
             "exit_order_id": self.exit_order_id,
             "exit_reason": self.exit_reason,
+            "partial_exit_ids": list(self.partial_exit_ids),
+            "trail_stop": self.trail_stop,
         }
 
     @classmethod
@@ -328,6 +337,8 @@ class OrderCandidate:
             last_synced_at=row.get("last_synced_at"),
             exit_order_id=row.get("exit_order_id"),
             exit_reason=row.get("exit_reason"),
+            partial_exit_ids=[str(x) for x in (row.get("partial_exit_ids") or [])],
+            trail_stop=_optional_float(row.get("trail_stop")),
         )
 
 

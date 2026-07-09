@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from alpha_bot.approval import ApprovalQueue
+from alpha_bot.auto.position_manager import remaining_quantity
 from alpha_bot.config import load_config
 from alpha_bot.data.quotes import fetch_quotes
 
@@ -128,19 +129,28 @@ def handle_bot_holdings(params: dict[str, str]) -> dict[str, Any]:
         exit_o = by_id.get(o.exit_order_id or "")
         if exit_o and exit_o.status == "filled":
             continue
+        # Net out target-1 scale-outs so the UI shows what is actually held.
+        qty_held, partial_inflight = remaining_quantity(o, by_id)
+        if qty_held <= 0:
+            continue
         held.append({
             "ticker": o.request.ticker,
             "market": o.request.market,
             "company": "",
-            "quantity": o.filled_quantity,
+            "quantity": qty_held,
             "avg_price": o.avg_fill_price,
             "stop_loss": o.stop_loss,
             "target1": o.target1,
             "target2": o.target2,
+            "trail_stop": o.trail_stop,
+            "t1_taken": bool(o.partial_exit_ids),
             "order_id": o.id,
             "broker": o.broker,
             "submitted_at": o.submitted_at or o.created_at,
-            "has_active_exit": bool(exit_o and exit_o.status in {"pending", "submitted", "partially_filled"}),
+            "has_active_exit": bool(
+                (exit_o and exit_o.status in {"pending", "submitted", "partially_filled"})
+                or partial_inflight
+            ),
         })
 
     if not held:
