@@ -63,8 +63,8 @@ class ApprovalQueue:
                     continue
                 if order.request.side != request.side:
                     continue
-                # Block duplicates for orders that are still active (pending or submitted).
-                if order.status in {"pending", "submitted"}:
+                # Block duplicates for orders that are still active.
+                if order.status in {"pending", "submitting", "submitted"}:
                     raise ApprovalError(
                         f"Active {order.status} order already exists for "
                         f"{request.market}:{request.ticker}: {order.id}"
@@ -327,9 +327,18 @@ class ApprovalQueue:
                 raise ApprovalError(
                     f"Order {order_id} is not pending; status={target_order.status}."
                 )
+            target_order = replace(
+                target_order,
+                status="submitting",
+                broker=broker.name,
+                broker_message="Submitting to broker.",
+            )
+            orders[target_index] = target_order
+            self._write(orders)
 
         # Broker call happens outside the lock so we don't block other
-        # queue readers while waiting on the network.
+        # queue readers while waiting on the network. The order is marked
+        # ``submitting`` first so a second approval cannot place it again.
         try:
             result = broker.place_order(target_order.request)
         except Exception as exc:
@@ -342,6 +351,7 @@ class ApprovalQueue:
                             status="rejected",
                             submitted_at=utc_now_iso(),
                             broker_message=str(exc),
+                            broker=broker.name,
                         )
                         self._write(orders)
                         break

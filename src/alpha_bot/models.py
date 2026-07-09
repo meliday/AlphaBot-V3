@@ -9,6 +9,7 @@ Signal = Literal["Strong Buy", "Buy", "Wait", "Hold Off", "Sell"]
 Side = Literal["buy", "sell"]
 OrderStatus = Literal[
     "pending",
+    "submitting",
     "submitted",
     "partially_filled",
     "filled",

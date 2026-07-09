@@ -185,13 +185,13 @@ def handle_bot_stats() -> dict[str, Any]:
     """Return today's bot activity counts: scans, signals, orders, fills.
 
     Derived from the audit log JSONL written under ``logs/``. Counts cover
-    the local-calendar-day so the UI shows "today's" activity.
+    the audit-log day so the UI shows today's activity.
     """
-    from datetime import datetime
+    from datetime import datetime, timezone
     from alpha_bot.audit_log import LOG_DIR
 
-    today = datetime.now().strftime("%Y-%m-%d")
-    path = LOG_DIR / f"{today}.jsonl"
+    today = datetime.now(timezone.utc).strftime("%Y%m%d")
+    path = LOG_DIR / f"activity_{today}.jsonl"
     stats = {"scans": 0, "signals": 0, "orders": 0, "fills": 0}
     if path.exists():
         try:

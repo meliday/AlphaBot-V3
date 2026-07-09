@@ -32,21 +32,6 @@ def handle_analyze(params: dict[str, str], serialise: Any) -> dict[str, Any]:
     report = analyze_ticker(
         analyzer, provider, ticker, market, company, language, use_llm=use_llm
     )
-    try:
-        from alpha_bot.audit_log import log_query
-        na = report.news_assessment
-        log_query(
-            ticker=ticker, market=market,
-            signal=report.signal,
-            score=report.scoreboard.total,
-            rr=report.trade_plan.rr_ratio,
-            reason=report.reason,
-            source="web",
-            news_sentiment=na.sentiment if na else None,
-            news_adjustment=na.score_adjustment if na else None,
-        )
-    except Exception:
-        pass
     data = serialise(report)
     data["report_text"] = render_report(report)
     return data

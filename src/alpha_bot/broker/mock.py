@@ -188,12 +188,22 @@ class MockBroker:
         holdings: dict[str, dict] = {}
         for row in rows:
             ticker = str(row["ticker"])
-            qty_delta = int(row["quantity"]) * (1 if row["side"] == "buy" else -1)
+            qty = int(row["quantity"])
             price = float(row.get("limit_price") or 0.0)
             entry = holdings.setdefault(ticker, {"quantity": 0, "cost": 0.0})
-            if qty_delta > 0:
-                entry["cost"] += qty_delta * price
-            entry["quantity"] += qty_delta
+            if row["side"] == "buy":
+                entry["cost"] += qty * price
+                entry["quantity"] += qty
+                continue
+
+            held_qty = entry["quantity"]
+            if held_qty > 0:
+                avg_cost = entry["cost"] / held_qty
+                sold_qty = min(qty, held_qty)
+                entry["cost"] -= avg_cost * sold_qty
+                if sold_qty == held_qty:
+                    entry["cost"] = 0.0
+            entry["quantity"] -= qty
         currency = "KRW" if market == "KR" else "USD"
         out: list[Position] = []
         for ticker, info in holdings.items():
