@@ -90,8 +90,25 @@ def build_parser() -> argparse.ArgumentParser:
     auto.add_argument("--auto-size", action="store_true", help="Compute quantity from account balance and config.risk_per_trade_pct")
     auto.set_defaults(func=cmd_auto)
 
-    backtest = subparsers.add_parser("backtest", help="Run a simple historical signal backtest")
-    _add_analysis_args(backtest)
+    backtest = subparsers.add_parser(
+        "backtest",
+        help="Historical signal backtest — single ticker, or a whole watchlist as a portfolio",
+    )
+    backtest.add_argument("--ticker", help="Single-ticker mode (requires --market)")
+    backtest.add_argument("--market", choices=["KR", "US"])
+    backtest.add_argument("--company")
+    backtest.add_argument("--data-dir")
+    backtest.add_argument("--demo", action="store_true")
+    backtest.add_argument("--kis-data", action="store_true", help="Use KIS REST for daily prices; fixtures fill fundamentals/news")
+    backtest.add_argument("--language", default="ko")
+    backtest.add_argument(
+        "--universe",
+        help="Watchlist file → portfolio mode: shared cash, max_positions, risk sizing (one run per market)",
+    )
+    backtest.add_argument(
+        "--cash", type=float,
+        help="Starting cash per market portfolio (default: KR 10,000,000 / US 10,000)",
+    )
     backtest.set_defaults(func=cmd_backtest)
 
     return parser
@@ -236,6 +253,10 @@ def cmd_auto(args: argparse.Namespace) -> int:
 def cmd_backtest(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config))
     provider = _provider(args, config.data_dir)
+    if args.universe:
+        return _portfolio_backtest(args, config, provider)
+    if not args.ticker or not args.market:
+        raise ValueError("backtest needs --ticker and --market, or --universe for portfolio mode")
     market = validate_market(args.market)
     candles = provider.get_candles(args.ticker, market, lookback=320)
     result = Backtester(analyzer_from_config(config)).run(
@@ -256,6 +277,60 @@ def cmd_backtest(args: argparse.Namespace) -> int:
             f"{trade.entry_date}->{trade.exit_date} {trade.outcome} "
             f"entry={trade.entry:.2f} exit={trade.exit:.2f} return={trade.return_pct:.1f}%"
         )
+    return 0
+
+
+_DEFAULT_PORTFOLIO_CASH = {"KR": 10_000_000.0, "US": 10_000.0}
+
+
+def _portfolio_backtest(args: argparse.Namespace, config, provider) -> int:
+    from alpha_bot.portfolio_backtest import PortfolioBacktester, TickerSeries
+
+    rows = load_watchlist(Path(args.universe))
+    groups: dict[str, list[TickerSeries]] = {}
+    for row in rows:
+        market = validate_market(row["market"])
+        try:
+            groups.setdefault(market, []).append(
+                TickerSeries(
+                    ticker=row["ticker"],
+                    market=market,
+                    candles=provider.get_candles(row["ticker"], market, lookback=320),
+                    fundamentals=provider.get_fundamentals(row["ticker"], market),
+                    catalysts=provider.get_catalysts(row["ticker"], market),
+                    context=provider.get_market_context(row["ticker"], market),
+                )
+            )
+        except (BotError, FileNotFoundError) as exc:
+            print(f"⚠️ {market}:{row['ticker']} 데이터 없음, 스킵: {exc}")
+    if not groups:
+        raise ValueError("No usable tickers in the universe (missing price data?).")
+
+    for market, universe in sorted(groups.items()):
+        engine = PortfolioBacktester(
+            analyzer_from_config(config),
+            starting_cash=args.cash or _DEFAULT_PORTFOLIO_CASH.get(market, 10_000.0),
+            max_positions=config.max_positions,
+            risk_per_trade_pct=config.risk_per_trade_pct,
+            max_position_pct=config.max_position_pct,
+        )
+        result = engine.run(universe)
+        currency = "KRW" if market == "KR" else "USD"
+        print(
+            f"\n[{market}] {len(universe)}종목 · 시작 {result.starting_cash:,.0f}{currency} "
+            f"→ 종료 {result.ending_equity:,.0f}{currency} ({result.total_return_pct:+.2f}%)"
+        )
+        print(
+            f"  trades={len(result.trades)} win_rate={result.win_rate:.1f}% "
+            f"max_dd={result.max_drawdown_pct:.2f}% sharpe={result.sharpe_ratio:.2f} "
+            f"max_concurrent={result.max_concurrent_positions} skipped={result.skipped_entries}"
+        )
+        for t in result.trades:
+            print(
+                f"  {t.entry_date}->{t.exit_date} {t.ticker:8s} {t.outcome:18s} "
+                f"qty={t.shares} entry={t.entry:,.2f} exit={t.exit:,.2f} "
+                f"ret={t.return_pct:+.2f}% pnl={t.pnl:+,.0f}"
+            )
     return 0
 
 

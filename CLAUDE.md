@@ -35,6 +35,8 @@ python3 -m alpha_bot.runner auto --universe watchlist.yaml --broker kis --auto-s
 
 # Backtest a single ticker's signal history
 python3 -m alpha_bot.runner backtest --ticker NVDA --market US
+# Portfolio backtest: whole watchlist under shared cash / max_positions / sizing (one run per market)
+python3 -m alpha_bot.runner backtest --universe watchlist.yaml --demo --cash 10000
 
 # Launch interfaces
 python3 -m alpha_bot.gui       # Tkinter desktop GUI (bot-gui)
@@ -97,7 +99,8 @@ but **no live KIS order is ever sent without `--broker kis` explicitly chosen** 
 **Reporting & observability**
 - **`notify.py`** — Best-effort Telegram alerts (buy submitted, exits, forced exits, circuit breaker, kill switch). Configured via `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` in `.env`; silent no-op when unset. De-duplicates identical alerts for 30 min so the auto-pilot loop can't spam. stdlib urllib only.
 - **`report/markdown.py`** — Renders `AnalysisReport` (incl. LLM assessment section) as Markdown in EN or KO.
-- **`backtest.py`** — `Backtester`/`BacktestResult` with win rate, total return, Sharpe, max drawdown. Guards against look-ahead twice: fundamentals filtered to those visible as-of the trade date (reporting-lag heuristic), and `use_live_market_data=False` so today's regime/benchmark never colors historical signals. `_walk_exits` simulates the **same exit ladder as live** (stop → target-1 half scale-out → 2×ATR trail floored at breakeven → target-2/trail/time), worst-case intra-bar ordering, gap fills at the open; each trade blends its legs into one weighted record with composite outcomes like `target1+trail`. `split_exits=False` restores the old single-stage model for A/B. Remaining divergences: no LLM replay, and `max_hold_days` time exit has no live counterpart.
+- **`backtest.py`** — `Backtester`/`BacktestResult` with win rate, total return, Sharpe, max drawdown. Guards against look-ahead twice: fundamentals filtered to those visible as-of the trade date (`visible_fundamentals`/`visible_catalysts`, reporting-lag heuristic), and `use_live_market_data=False` so today's regime/benchmark never colors historical signals. **`ladder_step()` is the single source of truth for simulated exits** (stop → target-1 scale-out → 2×ATR trail floored at breakeven → target-2/trail/time; worst-case intra-bar ordering, gap fills at the open), shared by `Backtester._walk_exits` and the portfolio engine; each trade blends its legs into one weighted record with composite outcomes like `target1+trail`. `split_exits=False` restores the old single-stage model for A/B. Remaining divergences: no LLM replay, and `max_hold_days` time exit has no live counterpart.
+- **`portfolio_backtest.py`** — `PortfolioBacktester.run(list[TickerSeries])` replays a whole universe day by day under the live constraints: shared cash, `max_positions` slots, risk-%-of-equity sizing capped by cash and `max_position_pct`, share-level scale-outs (larger half, matching live), signals on each close → fills at the next open, forced flatten at the end. Equity is marked to market daily, so max-drawdown/Sharpe come from the portfolio path, not per-trade returns. **One run = one market/currency** (mixing KRW+USD cash would be meaningless — the CLI groups the watchlist per market). CLI: `backtest --universe watchlist.yaml [--cash N]`.
 - **`audit_log.py`** — Append-only JSONL logs under `logs/` (`log_llm`, `log_query`, `log_queue`, `log_trade`, `log_cash_snapshot`). All call sites wrap it in `try/except pass` — logging never breaks trading.
 - **`daily_report.py`** — `build_daily_summary()` aggregates the audit JSONL into a per-day rollup for the dashboard.
 

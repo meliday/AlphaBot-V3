@@ -29,6 +29,88 @@ def _period_visible_by(period: str, asof: date, reporting_lag_days: int = 60) ->
     return report_date <= asof
 
 
+def visible_fundamentals(
+    fundamentals: list[FundamentalsQuarter], asof: date
+) -> list[FundamentalsQuarter]:
+    """Point-in-time filter: only quarters actually reported by ``asof``."""
+    return [
+        f for f in fundamentals
+        if (f.reported_at and f.reported_at <= asof)
+        or (f.reported_at is None and _period_visible_by(f.period, asof))
+    ]
+
+
+def visible_catalysts(catalysts: list[Catalyst], asof: date) -> list[Catalyst]:
+    """Point-in-time filter: only news published by ``asof``."""
+    return [c for c in catalysts if not c.published_at or c.published_at <= asof]
+
+
+def ladder_step(
+    bar: Candle,
+    *,
+    stop: float,
+    target1: float,
+    target2: float,
+    trail: float | None,
+    breakeven: float,
+    atr_fn,
+    split_exits: bool = True,
+) -> tuple[list[tuple[str, float, str]], float | None]:
+    """Advance the exit ladder by one daily bar.
+
+    The single source of truth for simulated exits, shared by the
+    per-ticker ``Backtester`` and the portfolio engine so the two can never
+    drift. Mirrors the live position manager: worst-case intra-bar ordering
+    (stop before target, trail before target-2), gaps fill at the open,
+    the trail arms at max(breakeven, fill − 2×ATR) on the target-1
+    scale-out and only ever ratchets up (on the close).
+
+    Returns ``(events, new_trail)`` where each event is
+    ``(kind, fill_price, outcome)`` and kind ∈ {"exit_all", "scale_out",
+    "exit_runner"}. ``atr_fn`` is called lazily only when the trail needs
+    an ATR value.
+    """
+    if trail is None:
+        # ── Phase 1: full position vs hard stop / target-1 ──
+        if bar.open <= stop:
+            return [("exit_all", bar.open, "stop_gap")], None
+        if bar.open >= target1:
+            if not split_exits:
+                return [("exit_all", bar.open, "target_gap")], None
+            fill, outcome1 = bar.open, "target1_gap"
+        elif bar.low <= stop:
+            return [("exit_all", stop, "stop")], None
+        elif bar.high >= target1:
+            if not split_exits:
+                return [("exit_all", target1, "target1")], None
+            fill, outcome1 = target1, "target1"
+        else:
+            return [], None
+
+        # Target-1 scale-out; same-bar runner checks, worst case first.
+        events: list[tuple[str, float, str]] = [("scale_out", fill, outcome1)]
+        atr = atr_fn()
+        trail = max(breakeven, fill - TRAIL_ATR_MULT * atr)
+        if bar.low <= trail:
+            events.append(("exit_runner", trail, "trail"))
+            return events, trail
+        if bar.high >= target2:
+            events.append(("exit_runner", target2, "target2"))
+            return events, trail
+        return events, max(trail, bar.close - TRAIL_ATR_MULT * atr)
+
+    # ── Phase 2: runner half vs trailing stop / target-2 ──
+    if bar.open <= trail:
+        return [("exit_runner", bar.open, "trail_gap")], trail
+    if bar.open >= target2:
+        return [("exit_runner", bar.open, "target2_gap")], trail
+    if bar.low <= trail:
+        return [("exit_runner", trail, "trail")], trail
+    if bar.high >= target2:
+        return [("exit_runner", target2, "target2")], trail
+    return [], max(trail, bar.close - TRAIL_ATR_MULT * atr_fn())
+
+
 @dataclass(frozen=True)
 class BacktestTrade:
     entry_date: str
@@ -178,16 +260,12 @@ class Backtester:
         index = min(220, max(20, len(candles) // 4))
         while index < len(candles) - 2:
             asof = candles[index].date
-            # ── Point-in-time filtering to eliminate look-ahead bias ──
-            visible_fundamentals = [
-                f for f in fundamentals
-                if (f.reported_at and f.reported_at <= asof)
-                or (f.reported_at is None and _period_visible_by(f.period, asof))
-            ]
-            visible_catalysts = [c for c in catalysts if not c.published_at or c.published_at <= asof]
             report = self.analyzer.analyze(
                 ticker, market, candles[: index + 1],
-                visible_fundamentals, visible_catalysts, context,
+                # Point-in-time filtering to eliminate look-ahead bias.
+                visible_fundamentals(fundamentals, asof),
+                visible_catalysts(catalysts, asof),
+                context,
                 # Never consult today's market state (regime veto, live
                 # benchmark) while judging a historical signal — that leaks
                 # the future into the past and makes results depend on the
@@ -273,60 +351,25 @@ class Backtester:
         legs: list[tuple[float, float]] = []
 
         for j in range(start_idx, max_exit_idx + 1):
-            bar = candles[j]
-
-            if trail is None:
-                # ── Phase 1: full position vs hard stop / target-1 ──
-                scale_ref: float | None = None
-                if bar.open <= stop:
-                    return [(1.0, bar.open)], j, "stop_gap"
-                if bar.open >= target1:
-                    if not self.split_exits:
-                        return [(1.0, bar.open)], j, "target_gap"
-                    scale_ref = bar.open
-                    first_leg_outcome = "target1_gap"
-                elif bar.low <= stop:
-                    return [(1.0, stop)], j, "stop"
-                elif bar.high >= target1:
-                    if not self.split_exits:
-                        return [(1.0, target1)], j, "target1"
-                    scale_ref = target1
-                    first_leg_outcome = "target1"
-                if scale_ref is None:
-                    continue
-
-                # Target-1 scale-out: half off, arm the runner's trail at
-                # breakeven or 2×ATR under the fill — same as live.
-                legs.append((0.5, scale_ref))
-                atr14 = latest_atr(candles[: j + 1], 14)
-                trail = max(entry, scale_ref - TRAIL_ATR_MULT * atr14)
-
-                # Same-bar runner checks, worst-case ordering (trail first).
-                if bar.low <= trail:
-                    legs.append((0.5, trail))
-                    return legs, j, f"{first_leg_outcome}+trail"
-                if bar.high >= target2:
-                    legs.append((0.5, target2))
-                    return legs, j, f"{first_leg_outcome}+target2"
-                trail = max(trail, bar.close - TRAIL_ATR_MULT * atr14)
-                continue
-
-            # ── Phase 2: runner half vs trailing stop / target-2 ──
-            if bar.open <= trail:
-                legs.append((0.5, bar.open))
-                return legs, j, f"{first_leg_outcome}+trail_gap"
-            if bar.open >= target2:
-                legs.append((0.5, bar.open))
-                return legs, j, f"{first_leg_outcome}+target2_gap"
-            if bar.low <= trail:
-                legs.append((0.5, trail))
-                return legs, j, f"{first_leg_outcome}+trail"
-            if bar.high >= target2:
-                legs.append((0.5, target2))
-                return legs, j, f"{first_leg_outcome}+target2"
-            # No exit: ratchet the trail on the close, never downward.
-            atr14 = latest_atr(candles[: j + 1], 14)
-            trail = max(trail, bar.close - TRAIL_ATR_MULT * atr14)
+            events, trail = ladder_step(
+                candles[j],
+                stop=stop,
+                target1=target1,
+                target2=target2,
+                trail=trail,
+                breakeven=entry,
+                atr_fn=lambda j=j: latest_atr(candles[: j + 1], 14),
+                split_exits=self.split_exits,
+            )
+            for kind, price, outcome in events:
+                if kind == "exit_all":
+                    return legs + [(1.0, price)], j, outcome
+                if kind == "scale_out":
+                    legs.append((0.5, price))
+                    first_leg_outcome = outcome
+                elif kind == "exit_runner":
+                    legs.append((0.5, price))
+                    return legs, j, f"{first_leg_outcome}+{outcome}"
 
         # Max-hold expiry — close whatever is still open at the final bar.
         final_close = candles[max_exit_idx].close
