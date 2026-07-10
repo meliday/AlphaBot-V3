@@ -38,6 +38,9 @@ python3 -m alpha_bot.runner backtest --ticker NVDA --market US
 # Portfolio backtest: whole watchlist under shared cash / max_positions / sizing (one run per market)
 python3 -m alpha_bot.runner backtest --universe watchlist.yaml --demo --cash 10000
 
+# Real-time exit monitor (Phase 3a): KIS WebSocket ticks drive the standard exit engine
+python3 -m alpha_bot.runner monitor --broker kis --kis-data   # live/paper; mock+--demo for dry runs
+
 # Launch interfaces
 python3 -m alpha_bot.gui       # Tkinter desktop GUI (bot-gui)
 python3 -m alpha_bot.web       # http.server dashboard on port 8501
@@ -73,6 +76,7 @@ but **no live KIS order is ever sent without `--broker kis` explicitly chosen** 
 - **`auto/guards.py`** — Kill switch (a `KILL_SWITCH` file at repo root, path override via `BOT_KILL_SWITCH`; first line = operator reason; delete to resume) and the daily-loss circuit breaker (`realized_pnl_today` pairs filled sells with parent buys via `exit_order_id`/`partial_exit_ids`; `daily_loss_exceeded` trips per market at `daily_loss_limit_pct` of account value; fail-open on balance-query errors).
 - **`auto/analysis.py`** — `analyze_ticker()` (news→LLM→analyze one-shot, used by CLI + auto) plus `make_provider`/`make_broker` factories and news-cache integration.
 - **`auto/position_manager.py`** — Post-fill exit ladder: before target-1, hard stop (market-sell all) or **target-1 scale-out** (limit-sell the larger half); after target-1, the runner half is governed by a **2×ATR trailing stop** (ratchets up only, floored at breakeven) and **target-2**. Structured as pure decision → side effects: `_evaluate_exit()` (no I/O, unit-testable) → `_ratchet_trail()` / `_submit_exit()` (enqueue→link→approve→notify); `manage_open_positions` is the orchestrating loop. `remaining_quantity()` nets out partial exits and defers new sells while one is in flight. `should_force_exit` fires immediately on severe LLM news, but `earnings_caution` alone requires price confirmation (close < SMA50) before liquidating. Also `reconcile_queue_with_broker`/`find_held_buy`/`count_open_positions` (detect manual sells, prevent double-entry).
+- **`auto/live_monitor.py`** — Phase 3a: tick-driven exits WITHOUT a second exit engine. `TickPriceCache` (latest tick + generation counter) + `StreamPricedProvider` (tick price first, TTL-cached daily candles for ATR math) + `LiveExitMonitor.evaluate_if_fresh()` which simply reruns `manage_open_positions` when new ticks arrived — broker verification, scale-outs, trail ratchet, alerts all included for free. Subscriptions track `held_kr_tickers()` (KR only; US positions stay on the 5-min loop). Kill switch never gates this module. CLI: `runner monitor`.
 - **`auto/sizing.py`** — `compute_position_size()`: shares = total_value × `risk_per_trade_pct` ÷ per-share-risk, capped by available cash **and** by `max_position_pct` of account value (a 2.5% stop with 1% risk would otherwise size to ~40% of equity). The fixed-quantity path enforces the same cap in the orchestrator pre-flight. `usable_cash()` (KIS paper cash=0 fallback) lives here and is shared with the orchestrator pre-flight.
 
 **News / LLM (`news/`)**
@@ -84,6 +88,8 @@ but **no live KIS order is ever sent without `--broker kis` explicitly chosen** 
 - **`data/fundamentals.py`** — Live fundamentals: `fetch_us_fundamentals` (yfinance, incl. ETF-proxy aggregation for leveraged/basket ETFs) and `fetch_kr_fundamentals` (via KIS client).
 - **`data/scraper.py`** — Best-effort news text: `fetch_us_news` (yfinance), `fetch_kr_news` (Naver Finance HTML). Failure is non-fatal.
 - **`data/quotes.py`** — `fetch_quotes()`: current price + day change for dashboard tables.
+- **`data/stream.py`** — KIS real-time WebSocket (KR 체결가 `H0STCNT0`). `parse_frame`/`build_subscribe_frame` are pure (wire protocol unit-tested offline); `KisStreamClient` is a thin thread with approval-key fetch (`/oauth2/Approval`, note `secretkey` field), auto-reconnect + resubscribe, PINGPONG echo. URLs by `KIS_MODE`: paper `:31000`, live `:21000`. H0STCNT0 field indices are constants — verify once against live paper data.
+- **`data/bars.py`** — `BarAggregator`: tick → fixed-interval intraday bars (OHLCV + session VWAP), pure/in-memory. Stale ticks dropped, gaps produce no synthetic bars, `force_close` flushes at session end. Feeds Phase-3b intraday strategies.
 
 **Approval & broker**
 - **`approval/queue.py`** — `ApprovalQueue` persists `OrderCandidate`s to `pending_orders.json`. Per-path re-entrant lock + atomic temp-file rename. Blocks duplicate active orders and re-entry into an unexited filled buy. Key methods: `enqueue`, `approve` (broker call outside the lock), `sync_with_broker`, `cancel_stale_orders` (voids limit orders unfilled past `stale_order_minutes`; partially-filled orders are deliberately left alone), `mark_externally_closed` (synthesises a filled sell), `update`.
@@ -135,7 +141,7 @@ State files at repo root: `pending_orders.json` (queue), `mock_orders.json` (moc
 - **Graceful degradation everywhere**: LLM, news scraping, market regime, and audit logging are all non-fatal. Core KIS-REST + scoring works with `--no-llm` or when optional deps/keys are absent.
 - **Single source of truth**: `run_auto_iteration()` is shared by CLI and web — change auto-trading behavior there, not in duplicate loops.
 - **Immutability**: all domain objects are frozen dataclasses; mutate via `dataclasses.replace`.
-- Runtime deps: `openai`, `requests`, `beautifulsoup4`, `yfinance` (Python 3.11–3.13). `pythonpath = ["src"]` set in `pyproject.toml`; tests use `unittest`/`pytest`.
+- Runtime deps: `openai`, `requests`, `beautifulsoup4`, `yfinance`, `websocket-client` (Python 3.11–3.13). `pythonpath = ["src"]` set in `pyproject.toml`; tests use `unittest`/`pytest`. On this machine the working interpreter is **miniforge `python3.12`** — the python.org 3.13 on PATH has no CA certs (SSL fails) and no deps installed.
 - **Auto-trading safety layers**: mock-by-default broker · kill switch · daily-loss circuit breaker (per market) · `max_positions` cap · `max_position_pct` per-name cap (both sizing paths) · per-ticker `--cooldown-hours` (default 24h) · market-hours gate · regime gate · cash pre-flight before every buy · stale-order auto-cancel · live-quote exit checks (daily-close fallback) · queue↔broker reconciliation for manual sells · per-ticker failures isolated · Telegram alerts on orders/exits/breakers (no-op unless configured).
 </content>
 </invoke>

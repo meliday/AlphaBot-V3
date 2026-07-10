@@ -90,6 +90,18 @@ def build_parser() -> argparse.ArgumentParser:
     auto.add_argument("--auto-size", action="store_true", help="Compute quantity from account balance and config.risk_per_trade_pct")
     auto.set_defaults(func=cmd_auto)
 
+    monitor = subparsers.add_parser(
+        "monitor",
+        help="Real-time exit monitor — KIS WebSocket ticks drive the standard exit engine (KR positions)",
+    )
+    monitor.add_argument("--broker", choices=["mock", "kis"])
+    monitor.add_argument("--data-dir")
+    monitor.add_argument("--demo", action="store_true")
+    monitor.add_argument("--kis-data", action="store_true", help="Use KIS REST for the daily candles (ATR/trail math)")
+    monitor.add_argument("--eval-interval", type=float, default=2.0, help="Seconds between exit passes when fresh ticks arrived")
+    monitor.add_argument("--resub-interval", type=float, default=30.0, help="Seconds between position→subscription syncs")
+    monitor.set_defaults(func=cmd_monitor)
+
     backtest = subparsers.add_parser(
         "backtest",
         help="Historical signal backtest — single ticker, or a whole watchlist as a portfolio",
@@ -248,6 +260,41 @@ def cmd_auto(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         print("\n🛑 Auto-pilot 종료 (사용자 중단)")
         return 0
+
+
+def cmd_monitor(args: argparse.Namespace) -> int:
+    config = load_config(Path(args.config))
+    broker_name = args.broker or config.broker
+    provider = _provider(args, config.data_dir)
+    queue = ApprovalQueue(config.approval_queue)
+    broker = KisBroker() if broker_name == "kis" else MockBroker()
+
+    from alpha_bot.auto.live_monitor import LiveExitMonitor
+    from alpha_bot.data.stream import KisStreamClient
+
+    monitor = LiveExitMonitor(queue, broker, provider, say=print)
+    stream = KisStreamClient(on_tick=monitor.on_tick, on_status=lambda m: print(f"  📡 {m}"))
+    watch = monitor.sync_subscriptions(stream)
+    print(
+        f"👁️ 실시간 청산 모니터 시작 (broker={broker_name}, "
+        f"감시 {len(watch)}종목: {sorted(watch) if watch else '없음 — 보유 발생 시 자동 구독'})"
+    )
+    stream.start()
+    last_resub = 0.0
+    try:
+        while True:
+            now = time.monotonic()
+            if now - last_resub >= args.resub_interval:
+                monitor.sync_subscriptions(stream)
+                last_resub = now
+            if monitor.market_open("KR"):
+                monitor.evaluate_if_fresh()
+            time.sleep(args.eval_interval)
+    except KeyboardInterrupt:
+        print("\n🛑 모니터 종료 (사용자 중단)")
+        return 0
+    finally:
+        stream.stop()
 
 
 def cmd_backtest(args: argparse.Namespace) -> int:

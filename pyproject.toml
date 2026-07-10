@@ -10,13 +10,15 @@ readme = "README.md"
 requires-python = ">=3.11,<3.14"
 authors = [{ name = "AI Trading Bot" }]
 # Runtime deps: stdlib + KIS REST work without these. The extras enable
-# the LLM news pipeline (openai) and live news scraping (requests, bs4,
-# yfinance for US tickers).
+# the LLM news pipeline (openai), live news scraping (requests, bs4,
+# yfinance for US tickers), and the KIS real-time WebSocket stream
+# (websocket-client — sync API, matches the project's threaded design).
 dependencies = [
     "openai>=1.40",
     "requests>=2.31",
     "beautifulsoup4>=4.12",
     "yfinance>=0.2.40",
+    "websocket-client>=1.8",
 ]
 
 [project.scripts]
