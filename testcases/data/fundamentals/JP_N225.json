@@ -1,0 +1,254 @@
+[
+  {
+    "period": "1987Q1",
+    "eps_yoy": 35.0,
+    "revenue_yoy": 12.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "1987-05-15",
+    "etf_proxy": false
+  },
+  {
+    "period": "1987Q2",
+    "eps_yoy": 40.0,
+    "revenue_yoy": 14.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "1987-08-15",
+    "etf_proxy": false
+  },
+  {
+    "period": "1987Q3",
+    "eps_yoy": 28.0,
+    "revenue_yoy": 10.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "1987-11-15",
+    "etf_proxy": false
+  },
+  {
+    "period": "1987Q4",
+    "eps_yoy": 32.0,
+    "revenue_yoy": 11.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "1988-02-15",
+    "etf_proxy": false
+  },
+  {
+    "period": "1988Q1",
+    "eps_yoy": 45.0,
+    "revenue_yoy": 16.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "1988-05-15",
+    "etf_proxy": false
+  },
+  {
+    "period": "1988Q2",
+    "eps_yoy": 50.0,
+    "revenue_yoy": 18.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "1988-08-15",
+    "etf_proxy": false
+  },
+  {
+    "period": "1988Q3",
+    "eps_yoy": 55.0,
+    "revenue_yoy": 20.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "1988-11-15",
+    "etf_proxy": false
+  },
+  {
+    "period": "1988Q4",
+    "eps_yoy": 60.0,
+    "revenue_yoy": 22.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "1989-02-15",
+    "etf_proxy": false
+  },
+  {
+    "period": "1989Q1",
+    "eps_yoy": 48.0,
+    "revenue_yoy": 18.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "1989-05-15",
+    "etf_proxy": false
+  },
+  {
+    "period": "1989Q2",
+    "eps_yoy": 38.0,
+    "revenue_yoy": 15.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "1989-08-15",
+    "etf_proxy": false
+  },
+  {
+    "period": "1989Q3",
+    "eps_yoy": 30.0,
+    "revenue_yoy": 12.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "1989-11-15",
+    "etf_proxy": false
+  },
+  {
+    "period": "1989Q4",
+    "eps_yoy": 20.0,
+    "revenue_yoy": 8.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "1990-02-15",
+    "etf_proxy": false
+  },
+  {
+    "period": "1990Q1",
+    "eps_yoy": 5.0,
+    "revenue_yoy": 3.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "1990-05-15",
+    "etf_proxy": false
+  },
+  {
+    "period": "1990Q2",
+    "eps_yoy": -10.0,
+    "revenue_yoy": -2.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "1990-08-15",
+    "etf_proxy": false
+  },
+  {
+    "period": "1990Q3",
+    "eps_yoy": -25.0,
+    "revenue_yoy": -5.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "1990-11-15",
+    "etf_proxy": false
+  },
+  {
+    "period": "1990Q4",
+    "eps_yoy": -35.0,
+    "revenue_yoy": -8.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "1991-02-15",
+    "etf_proxy": false
+  },
+  {
+    "period": "1991Q1",
+    "eps_yoy": -40.0,
+    "revenue_yoy": -10.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "1991-05-15",
+    "etf_proxy": false
+  },
+  {
+    "period": "1991Q2",
+    "eps_yoy": -45.0,
+    "revenue_yoy": -12.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "1991-08-15",
+    "etf_proxy": false
+  },
+  {
+    "period": "1991Q3",
+    "eps_yoy": -50.0,
+    "revenue_yoy": -15.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "1991-11-15",
+    "etf_proxy": false
+  },
+  {
+    "period": "1991Q4",
+    "eps_yoy": -55.0,
+    "revenue_yoy": -18.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "1992-02-15",
+    "etf_proxy": false
+  },
+  {
+    "period": "1992Q1",
+    "eps_yoy": -60.0,
+    "revenue_yoy": -20.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "1992-05-15",
+    "etf_proxy": false
+  },
+  {
+    "period": "1992Q2",
+    "eps_yoy": -50.0,
+    "revenue_yoy": -15.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "1992-08-15",
+    "etf_proxy": false
+  },
+  {
+    "period": "1992Q3",
+    "eps_yoy": -45.0,
+    "revenue_yoy": -12.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "1992-11-15",
+    "etf_proxy": false
+  },
+  {
+    "period": "1992Q4",
+    "eps_yoy": -40.0,
+    "revenue_yoy": -10.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "1993-02-15",
+    "etf_proxy": false
+  },
+  {
+    "period": "1993Q1",
+    "eps_yoy": -30.0,
+    "revenue_yoy": -8.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "1993-05-15",
+    "etf_proxy": false
+  },
+  {
+    "period": "1993Q2",
+    "eps_yoy": -20.0,
+    "revenue_yoy": -5.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "1993-08-15",
+    "etf_proxy": false
+  },
+  {
+    "period": "1993Q3",
+    "eps_yoy": -15.0,
+    "revenue_yoy": -3.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "1993-11-15",
+    "etf_proxy": false
+  },
+  {
+    "period": "1993Q4",
+    "eps_yoy": -10.0,
+    "revenue_yoy": -1.0,
+    "eps_surprise": null,
+    "revenue_surprise": null,
+    "reported_at": "1994-02-15",
+    "etf_proxy": false
+  }
+]
