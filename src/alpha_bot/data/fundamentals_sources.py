@@ -119,7 +119,15 @@ class SecEdgarSource:
 
     name = "sec-edgar"
 
-    _EARNINGS = ("NetIncomeLoss",)
+    # Filers migrate earnings tags too, not just revenue: Broadcom's
+    # NetIncomeLoss series stops dead in 2019 and continues under
+    # ProfitLoss, which read as "no earnings data" and cost the name its
+    # entire EPS score. Ordered most-specific first; all are merged.
+    _EARNINGS = (
+        "NetIncomeLoss",
+        "ProfitLoss",
+        "NetIncomeLossAvailableToCommonStockholdersBasic",
+    )
     _REVENUE = (
         "RevenueFromContractWithCustomerExcludingAssessedTax",
         "Revenues",
@@ -513,6 +521,36 @@ def default_sources(
     return [NaverFinanceSource(), KisSource(kis_client_factory), FixtureSource(data_dir)]
 
 
+# The scorer's Q-over-Q acceleration bonus needs a previous quarter for
+# +1 and a third for a sustained +2 — the "C" in CANSLIM. yfinance only
+# ever publishes 5 quarterly columns, which yields exactly ONE YoY pair,
+# so a first-match chain left that bonus permanently dead for US names.
+# Keep asking until some source clears this bar.
+_PREFER_QUARTERS = 3
+
+
+def _merge_surprise(
+    winner: list[FundamentalsQuarter], others: list[list[FundamentalsQuarter]]
+) -> list[FundamentalsQuarter]:
+    """Carry ``eps_surprise`` from a shallower source onto the deep one.
+
+    Only yfinance reports the earnings surprise (worth +1 in the scorer),
+    and only EDGAR is deep enough to earn the acceleration bonus. Choosing
+    the deeper source would otherwise silently trade one point for two.
+    Matched on the quarter label, so a mismatched calendar simply skips
+    rather than grafting the wrong quarter's number.
+    """
+
+    if not winner or winner[0].eps_surprise is not None:
+        return winner
+    for quarters in others:
+        for candidate in quarters:
+            if candidate.period == winner[0].period and candidate.eps_surprise is not None:
+                from dataclasses import replace
+                return [replace(winner[0], eps_surprise=candidate.eps_surprise), *winner[1:]]
+    return winner
+
+
 def resolve_fundamentals(
     ticker: str,
     market: Market,
@@ -524,8 +562,15 @@ def resolve_fundamentals(
     cache_dir: Path | None = None,
     cache_ttl: float = CACHE_TTL_SECONDS,
     use_cache: bool = True,
+    prefer_quarters: int = _PREFER_QUARTERS,
 ) -> FundamentalsResult:
-    """First source that answers wins. Never raises."""
+    """Deepest useful answer wins, in chain order. Never raises.
+
+    Not strictly first-match: a source that returns a single quarter is
+    *usable* but cannot support the acceleration scoring, so resolution
+    continues and keeps the deepest result. It stops as soon as a source
+    clears ``prefer_quarters``, so the common case still costs one call.
+    """
 
     cache_dir = cache_dir or CACHE_DIR
     if use_cache:
@@ -537,6 +582,9 @@ def resolve_fundamentals(
         market, data_dir=data_dir, kis_client_factory=kis_client_factory
     )
     attempts: list[tuple[str, str]] = []
+    best: tuple[str, list[FundamentalsQuarter]] | None = None
+    also_seen: list[list[FundamentalsQuarter]] = []
+
     for source in chain:
         try:
             quarters = source.fetch(ticker, market, limit)
@@ -544,16 +592,28 @@ def resolve_fundamentals(
             attempts.append((source.name, f"error: {exc}"))
             logger.info("Fundamentals source %s failed for %s: %s", source.name, ticker, exc)
             continue
-        if quarters:
-            attempts.append((source.name, f"ok: {len(quarters)}분기"))
-            result = FundamentalsResult(quarters, source.name, attempts)
-            if use_cache:
-                _write_cache(ticker, market, cache_dir, result)
-            return result
-        attempts.append((source.name, "empty"))
+        if not quarters:
+            attempts.append((source.name, "empty"))
+            continue
 
-    logger.warning(
-        "No fundamentals for %s:%s — tried %s",
-        market, ticker, ", ".join(f"{n}({o})" for n, o in attempts),
-    )
-    return FundamentalsResult([], "none", attempts)
+        attempts.append((source.name, f"ok: {len(quarters)}분기"))
+        if best is None or len(quarters) > len(best[1]):
+            if best is not None:
+                also_seen.append(best[1])
+            best = (source.name, quarters)
+        else:
+            also_seen.append(quarters)
+        if len(quarters) >= prefer_quarters:
+            break
+
+    if best is None:
+        logger.warning(
+            "No fundamentals for %s:%s — tried %s",
+            market, ticker, ", ".join(f"{n}({o})" for n, o in attempts),
+        )
+        return FundamentalsResult([], "none", attempts)
+
+    result = FundamentalsResult(_merge_surprise(best[1], also_seen), best[0], attempts)
+    if use_cache:
+        _write_cache(ticker, market, cache_dir, result)
+    return result

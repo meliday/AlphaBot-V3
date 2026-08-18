@@ -51,12 +51,17 @@ class ChainTests(unittest.TestCase):
                 "NVDA", "US", sources=sources, cache_dir=Path(tmp) / "c", **kw
             )
 
-    def test_the_first_answering_source_wins_and_later_ones_are_untouched(self):
+    def test_chain_order_breaks_ties_between_equally_deep_sources(self):
+        # Superseded contract: resolution used to stop at the first source
+        # that answered at all. It now keeps looking while the best result
+        # is too shallow for the acceleration bonus (see
+        # DepthPreferenceTests), so both stubs are consulted here — order
+        # still decides the winner when neither is deeper.
         first = StubSource("first", [quarter()])
         second = StubSource("second", [quarter()])
         result = self._resolve([first, second])
         self.assertEqual(result.source, "first")
-        self.assertEqual(second.calls, 0)
+        self.assertEqual(second.calls, 1)
 
     def test_an_empty_source_falls_through(self):
         empty = StubSource("empty", [])
@@ -210,3 +215,87 @@ class MarketRoutingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DepthPreferenceTests(unittest.TestCase):
+    """Depth matters because the scorer's acceleration bonus needs it.
+
+    yfinance publishes only 5 quarterly columns, which yields exactly one
+    YoY pair — so a strict first-match chain left the Q-over-Q bonus
+    (the "C" in CANSLIM) permanently dead for every US name.
+    """
+
+    def _resolve(self, sources, **kw):
+        with tempfile.TemporaryDirectory() as tmp:
+            return resolve_fundamentals(
+                "NVDA", "US", sources=sources, cache_dir=Path(tmp) / "c", **kw
+            )
+
+    def test_a_shallow_first_source_does_not_end_the_search(self):
+        shallow = StubSource("shallow", [quarter("2026Q2")])
+        deep = StubSource("deep", [quarter(f"2026Q{i}") for i in range(1, 5)])
+        result = self._resolve([shallow, deep])
+        self.assertEqual(result.source, "deep")
+        self.assertEqual(len(result.quarters), 4)
+
+    def test_a_deep_enough_first_source_stops_the_search(self):
+        deep = StubSource("deep", [quarter(f"2026Q{i}") for i in range(1, 5)])
+        never = StubSource("never", [quarter()])
+        self._resolve([deep, never])
+        self.assertEqual(never.calls, 0)
+
+    def test_the_deepest_wins_even_if_none_clear_the_bar(self):
+        one = StubSource("one", [quarter("2026Q2")])
+        two = StubSource("two", [quarter("2026Q2"), quarter("2026Q1")])
+        result = self._resolve([one, two], prefer_quarters=9)
+        self.assertEqual(result.source, "two")
+
+    def test_a_deeper_later_source_does_not_beat_an_equal_earlier_one(self):
+        # Chain order still expresses preference among equals.
+        first = StubSource("first", [quarter("2026Q2"), quarter("2026Q1")])
+        second = StubSource("second", [quarter("2026Q2"), quarter("2026Q1")])
+        result = self._resolve([first, second], prefer_quarters=9)
+        self.assertEqual(result.source, "first")
+
+
+class SurpriseMergeTests(unittest.TestCase):
+    """Choosing the deeper source must not silently trade +1 for +2.
+
+    Only yfinance reports eps_surprise; only EDGAR is deep enough for the
+    acceleration bonus. The surprise is carried across when the newest
+    quarters agree on their label.
+    """
+
+    def _q(self, period, surprise=None):
+        return FundamentalsQuarter(
+            period=period, eps_yoy=20.0, revenue_yoy=10.0, eps_surprise=surprise
+        )
+
+    def _resolve(self, sources):
+        with tempfile.TemporaryDirectory() as tmp:
+            return resolve_fundamentals(
+                "NVDA", "US", sources=sources, cache_dir=Path(tmp) / "c"
+            )
+
+    def test_surprise_is_carried_onto_the_deeper_result(self):
+        shallow = StubSource("yf", [self._q("2026Q2", surprise=0.04)])
+        deep = StubSource("edgar", [self._q(f"2026Q{i}") for i in (2, 1)] + [self._q("2025Q4")])
+        result = self._resolve([shallow, deep])
+        self.assertEqual(result.source, "edgar")
+        self.assertAlmostEqual(result.quarters[0].eps_surprise, 0.04)
+
+    def test_a_mismatched_quarter_is_not_grafted(self):
+        # A stale shallow source must not lend its surprise to a newer quarter.
+        shallow = StubSource("yf", [self._q("2025Q4", surprise=0.04)])
+        deep = StubSource("edgar", [self._q(f"2026Q{i}") for i in (2, 1)] + [self._q("2025Q3")])
+        result = self._resolve([shallow, deep])
+        self.assertIsNone(result.quarters[0].eps_surprise)
+
+    def test_an_existing_surprise_is_left_alone(self):
+        deep = StubSource(
+            "edgar",
+            [self._q("2026Q2", surprise=0.09), self._q("2026Q1"), self._q("2025Q4")],
+        )
+        shallow = StubSource("yf", [self._q("2026Q2", surprise=0.04)])
+        result = self._resolve([deep, shallow])
+        self.assertAlmostEqual(result.quarters[0].eps_surprise, 0.09)
