@@ -19,6 +19,7 @@ watchlist.yaml
 pending_orders.json
 pending_orders.json.tmp
 pending_orders.json.lock
+pending_orders.backup-*.json
 mock_orders.json
 mock_orders.json.tmp
 mock_state.json
@@ -75,3 +76,5 @@ AlphaBot.icns
 
 # ── Claude Code 내부 설정 ─────────────────────────────────────────────
 .claude/
+CLAUDE.md
+GEMINI.md
