@@ -61,21 +61,31 @@ class StrategyParams:
     bollinger_moderate: float = 0.14  # Bollinger width < this → +1 (compressed)
     relative_strength_threshold: float = 5.0  # outperformance > this → +1
 
-    # Signal decision
+    # Signal decision.
+    #
+    # ── R/R thresholds are calibrated to the ENTRY-HIGH basis. ──
+    # rr_ratio is measured at entry_high (close×1.01), the price orders are
+    # actually posted at. The original values (strong_buy_rr 3.0, relax
+    # threshold 3.0, conviction floors 1.2/1.0, min_rr 1.5) were tuned when
+    # rr was measured at the close, which overstated it by 25–90% depending
+    # on stop width. testcases/rr_ab_study.py replayed 13 datasets across
+    # both bases: keeping the old numbers on the honest basis cut trades
+    # 28→10; the values below (old × ~0.8) restore comparable behaviour
+    # with slightly fewer, higher-quality entries (avg +9.6%/trade vs +6.2%).
     strong_buy_score: int = 27        # score ≥ this AND rr ≥ strong_buy_rr
-    strong_buy_rr: float = 3.0
+    strong_buy_rr: float = 2.4
     # Score-adjusted R/R floor: high-conviction setups tolerate tighter risk/reward
     # because earnings power and market structure compress the achievable R/R
     # (e.g. SK Hynix near 52w-high with HBM cycle tailwind).
     high_conviction_score: int = 27   # score ≥ this → relax min_rr to high_conviction_min_rr
-    high_conviction_min_rr: float = 1.2
+    high_conviction_min_rr: float = 1.0
     highest_conviction_score: int = 29  # score ≥ this → relax further
-    highest_conviction_min_rr: float = 1.0
+    highest_conviction_min_rr: float = 0.8
     # R/R-adjusted score floor: wide-reward setups tolerate a slightly lower total
     # score, because the asymmetric payoff compensates for weaker fundamentals.
     # Guard: technical_trend must be ≥ high_rr_min_trend so we don't enter
     # broken-trend names just because the stop happens to be far away.
-    high_rr_score_relax_rr: float = 3.0   # R/R ≥ this → relax min_score
+    high_rr_score_relax_rr: float = 2.4   # R/R ≥ this → relax min_score
     high_rr_min_score: int = 22            # relaxed min_score when R/R qualifies
     high_rr_min_trend: int = 6             # technical_trend sub-score floor for relaxation
 
@@ -108,7 +118,10 @@ class StrategyAnalyzer:
     def __init__(
         self,
         min_score: int = 24,
-        min_rr: float = 1.5,
+        # Entry-high basis (see StrategyParams). 1.2 here ≈ the old 1.5 on
+        # the inflated close basis, chosen from the A/B study for slightly
+        # fewer but higher-quality entries.
+        min_rr: float = 1.2,
         params: StrategyParams | None = None,
     ):
         self.min_score = min_score

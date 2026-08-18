@@ -6,7 +6,7 @@ approval_queue: pending_orders.json
 max_positions: 5
 risk_per_trade_pct: 1.0
 min_score: 24
-min_rr: 1.5
+min_rr: 1.2                 # entry-high basis (old close-basis 1.5 ≈ 1.0 here)
 # ── Risk guards ──
 max_position_pct: 20.0      # cap one position at this % of account value (0 = off)
 daily_loss_limit_pct: 3.0   # halt new buys after today's realized loss hits this % (0 = off)

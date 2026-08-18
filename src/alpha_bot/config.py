@@ -34,7 +34,8 @@ class AppConfig:
     max_positions: int = 5
     risk_per_trade_pct: float = 1.0
     min_score: int = 24
-    min_rr: float = 1.5
+    # Entry-high basis; 1.2 ≈ the pre-9c2dbb6 effective 1.5 (see rr_ab_study).
+    min_rr: float = 1.2
     # ── Risk guards (P1 hardening) ──
     # Cap any single position at this % of account value. Without this, a
     # tight stop (2.5%) with 1% risk sizing could put ~40% of the account
@@ -107,7 +108,7 @@ def load_config(path: Path = Path("config.yaml")) -> AppConfig:
         max_positions=int(values.get("max_positions", 5)),
         risk_per_trade_pct=float(values.get("risk_per_trade_pct", 1.0)),
         min_score=int(values.get("min_score", 24)),
-        min_rr=float(values.get("min_rr", 1.5)),
+        min_rr=float(values.get("min_rr", 1.2)),
         max_position_pct=float(values.get("max_position_pct", 20.0)),
         daily_loss_limit_pct=float(values.get("daily_loss_limit_pct", 3.0)),
         stale_order_minutes=int(values.get("stale_order_minutes", 60)),
