@@ -35,6 +35,7 @@ from alpha_bot.backtest import (
     round_trip_cost_pct,
     visible_catalysts,
     visible_fundamentals,
+    limit_entry_fill,
 )
 from alpha_bot.models import Candle, Catalyst, FundamentalsQuarter, Market, MarketContext
 from alpha_bot.strategy.analyzer import StrategyAnalyzer
@@ -143,7 +144,8 @@ class _Position:
 @dataclass
 class _PendingEntry:
     ticker: str
-    fill_idx: int           # ticker bar index at which the entry fills (next open)
+    fill_idx: int           # ticker bar index at which the entry attempts to fill
+    signal_close: float     # close the limit price derives from (close × (1+pct))
     stop: float
     target1: float
     target2: float
@@ -163,6 +165,7 @@ class PortfolioBacktester:
         max_hold_days: int = 30,
         commission_pct: float | None = None,
         slippage_pct: float = 0.05,
+        entry_limit_pct: float | None = 0.01,
     ):
         self.analyzer = analyzer or StrategyAnalyzer()
         self.starting_cash = starting_cash
@@ -172,6 +175,8 @@ class PortfolioBacktester:
         self.max_hold_days = max_hold_days
         self.commission_pct = commission_pct
         self.slippage_pct = slippage_pct
+        # Mirrors the live limit entry; None = legacy always-fill (A/B).
+        self.entry_limit_pct = entry_limit_pct
 
     def run(self, universe: list[TickerSeries]) -> PortfolioBacktestResult:
         if not universe:
@@ -312,7 +317,13 @@ class PortfolioBacktester:
                     skipped_entries += 1
                     continue
                 bar = series[ticker].candles[bar_idx]
-                entry = bar.open * (1 + slip)
+                fill = limit_entry_fill(bar, order.signal_close, self.entry_limit_pct)
+                if fill is None:
+                    # Gapped past the live-style limit — the order would have
+                    # sat unfilled and been stale-cancelled. Not a "skip" in
+                    # the capacity sense; the setup simply never executed.
+                    continue
+                entry = fill * (1 + slip)
                 per_share_risk = entry - order.stop
                 if per_share_risk <= 0:
                     skipped_entries += 1
@@ -373,6 +384,7 @@ class PortfolioBacktester:
                 pending[ticker] = _PendingEntry(
                     ticker=ticker,
                     fill_idx=bar_idx + 1,
+                    signal_close=s.candles[bar_idx].close,
                     stop=report.trade_plan.stop_loss,
                     target1=report.trade_plan.target1,
                     target2=report.trade_plan.target2,

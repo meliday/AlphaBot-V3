@@ -123,6 +123,37 @@ def ladder_step(
     return [], max(trail, bar.close - TRAIL_ATR_MULT * atr_fn())
 
 
+def limit_entry_fill(
+    bar: Candle, signal_close: float, entry_limit_pct: float | None
+) -> float | None:
+    """Fill price for the live-style limit entry on the bar after the signal.
+
+    Live posts a limit buy at ``signal_close × (1 + entry_limit_pct)`` — the
+    ``entry_high`` of the trade plan — and stale-cancels it if unfilled. The
+    daily-bar approximation:
+
+      * ``open ≤ limit``  → marketable at the open, fills at the open;
+      * ``low ≤ limit``   → touched intraday, fills at the limit;
+      * otherwise         → gapped away and never came back — **no fill**.
+
+    ``None`` disables the model (legacy always-fill-at-the-open), kept for
+    A/B comparison. Shared by the single-ticker and portfolio engines so the
+    two cannot drift. This closes the divergence where the backtest banked
+    every gap-up day (disproportionately the winners in a momentum system)
+    that the live limit order would have missed — 5–64% of days depending on
+    the dataset.
+    """
+
+    if entry_limit_pct is None:
+        return bar.open
+    limit = signal_close * (1 + entry_limit_pct)
+    if bar.open <= limit:
+        return bar.open
+    if bar.low <= limit:
+        return limit
+    return None
+
+
 @dataclass(frozen=True)
 class BacktestTrade:
     entry_date: str
@@ -238,7 +269,9 @@ class Backtester:
 
     Known live/backtest divergences: the LLM news input and intraday quote
     timing cannot be replayed; the backtest also enforces ``max_hold_days``
-    while live positions have no time exit.
+    while live positions have no time exit. Entries mirror the live limit
+    order via :func:`limit_entry_fill` — gap-throughs are skipped, not
+    banked.
     """
 
     def __init__(
@@ -249,6 +282,7 @@ class Backtester:
         slippage_pct: float = 0.05,
         risk_free_rate: float = 0.0,  # annual %, e.g. 4.5 for US, 3.0 for KR
         split_exits: bool = True,
+        entry_limit_pct: float | None = 0.01,
     ):
         self.analyzer = analyzer or StrategyAnalyzer()
         self.max_hold_days = max_hold_days
@@ -257,6 +291,9 @@ class Backtester:
         self.slippage_pct = slippage_pct      # e.g. 0.05 → 0.05 %
         self.risk_free_rate = risk_free_rate
         self.split_exits = split_exits
+        # Mirrors the live entry: a limit at signal_close × (1+pct), skipped
+        # when the next bar gaps beyond it. None = legacy always-fill (A/B).
+        self.entry_limit_pct = entry_limit_pct
 
     def run(
         self,
@@ -291,8 +328,15 @@ class Backtester:
                 continue
 
             entry_candle = candles[index + 1]
-            # Buy leg slippage: open price + half the round-trip slip.
-            entry = entry_candle.open * (1 + slip_per_leg)
+            fill = limit_entry_fill(
+                entry_candle, candles[index].close, self.entry_limit_pct
+            )
+            if fill is None:
+                # Gapped past the limit; live would stale-cancel and rescan.
+                index += 1
+                continue
+            # Buy leg slippage: fill price + half the round-trip slip.
+            entry = fill * (1 + slip_per_leg)
             max_exit_idx = min(index + self.max_hold_days, len(candles) - 1)
 
             legs, exit_idx, outcome = self._walk_exits(

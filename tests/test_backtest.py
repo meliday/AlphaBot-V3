@@ -157,3 +157,39 @@ class ExitLadderTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LimitEntryFillTests(unittest.TestCase):
+    """The live entry is a limit at signal_close×1.01, not a market-on-open.
+
+    The old always-fill model banked every gap-up day — disproportionately
+    the winners in a momentum system — that the real limit order would have
+    missed. These pin the three fill cases and the A/B escape hatch.
+    """
+
+    def _bar(self, open_, high, low, close):
+        from datetime import date
+        from alpha_bot.models import Candle
+        return Candle(date(2026, 1, 5), open_, high, low, close, 1_000_000)
+
+    def test_marketable_open_fills_at_the_open(self):
+        from alpha_bot.backtest import limit_entry_fill
+        bar = self._bar(100.5, 103.0, 100.0, 102.0)
+        # limit = 100 × 1.01 = 101 ≥ open 100.5 → marketable
+        self.assertEqual(limit_entry_fill(bar, 100.0, 0.01), 100.5)
+
+    def test_intraday_touch_fills_at_the_limit(self):
+        from alpha_bot.backtest import limit_entry_fill
+        bar = self._bar(102.0, 104.0, 100.8, 103.5)
+        # opens above the 101 limit but trades back through it
+        self.assertEqual(limit_entry_fill(bar, 100.0, 0.01), 101.0)
+
+    def test_a_clean_gap_up_never_fills(self):
+        from alpha_bot.backtest import limit_entry_fill
+        bar = self._bar(103.0, 105.0, 102.5, 104.0)
+        self.assertIsNone(limit_entry_fill(bar, 100.0, 0.01))
+
+    def test_none_disables_the_model_for_ab_runs(self):
+        from alpha_bot.backtest import limit_entry_fill
+        bar = self._bar(103.0, 105.0, 102.5, 104.0)
+        self.assertEqual(limit_entry_fill(bar, 100.0, None), 103.0)
