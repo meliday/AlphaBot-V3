@@ -43,6 +43,52 @@ class HeartbeatTests(unittest.TestCase):
             self.assertFalse(stopped.healthy)
             self.assertIn("stopped", stopped.reason)
 
+    def test_deliberate_stop_is_not_an_alarm(self):
+        """Ctrl+C and a dead process must not look the same.
+
+        Both are unhealthy, but only one warrants waking someone. When the
+        two were collapsed, every clean shutdown warned on the safety bar
+        and would have paged over Telegram — and an alert that fires on
+        normal operation is one the operator learns to ignore.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+
+            write_heartbeat("auto", status="stopped", directory=directory)
+            stopped = check_heartbeat("auto", 30, directory=directory)
+            self.assertEqual(stopped.state, "stopped")
+            self.assertTrue(stopped.stopped_deliberately)
+            self.assertFalse(stopped.alarming)
+
+            write_heartbeat("auto", status="failed", directory=directory)
+            failed = check_heartbeat("auto", 30, directory=directory)
+            self.assertEqual(failed.state, "failed")
+            self.assertFalse(failed.stopped_deliberately)
+            self.assertTrue(failed.alarming)
+
+            write_heartbeat("auto", status="running", directory=directory)
+            record = json.loads((directory / "auto.json").read_text(encoding="utf-8"))
+            stale = check_heartbeat(
+                "auto", 30, directory=directory,
+                now_epoch=record["updated_epoch"] + 31,
+            )
+            self.assertEqual(stale.state, "stale")
+            self.assertTrue(stale.alarming)
+
+            skewed = check_heartbeat(
+                "auto", 30, directory=directory,
+                now_epoch=record["updated_epoch"] - 120,
+            )
+            self.assertEqual(skewed.state, "skew")
+            self.assertTrue(skewed.alarming)
+
+    def test_never_started_is_absent_not_alarming(self):
+        """A component nobody launched has made no promise to break."""
+        with tempfile.TemporaryDirectory() as tmp:
+            health = check_heartbeat("monitor", 60, directory=Path(tmp))
+            self.assertEqual(health.state, "absent")
+            self.assertFalse(health.alarming)
+
     def test_missing_and_malformed_heartbeats_fail_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
@@ -53,6 +99,7 @@ class HeartbeatTests(unittest.TestCase):
             health = check_heartbeat("monitor", 60, directory=directory)
             self.assertFalse(health.healthy)
             self.assertIn("invalid", health.reason)
+            self.assertEqual(health.state, "invalid")
 
 
 class RunnerRegressionTests(unittest.TestCase):

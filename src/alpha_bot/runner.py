@@ -392,9 +392,16 @@ def cmd_watchdog(args: argparse.Namespace) -> int:
             )
             if not health.healthy and in_grace and health.record is None:
                 continue
-            unhealthy = unhealthy or not health.healthy
+            # Paging someone because the bot was switched off on purpose is
+            # how alerts get muted, and a muted alert is worse than none.
+            # Absence still pages after the grace window: a component that
+            # was asked for and never appeared is what this exists to catch.
+            failing = health.alarming or health.state == "absent"
+            unhealthy = unhealthy or failing
             prior = previous.get(component)
-            if not health.healthy and prior is not False:
+            if health.stopped_deliberately and prior is not True:
+                print(f"⏹️  AlphaBot {component} 중지됨 (정상 종료)")
+            if failing and prior is not False:
                 message = f"🚨 AlphaBot {component} 생존 신호 이상\n{health.reason}"
                 print(message)
                 notify(
@@ -409,7 +416,7 @@ def cmd_watchdog(args: argparse.Namespace) -> int:
                 )
                 print(message)
                 notify(message, dedupe_key=f"watchdog:{component}:recovered", dedupe_ttl=60)
-            previous[component] = health.healthy
+            previous[component] = not failing
 
         if args.once:
             return 1 if unhealthy else 0

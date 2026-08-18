@@ -83,6 +83,7 @@ def handle_safety() -> dict[str, Any]:
             health = check_heartbeat(component, max_age)
             out[component] = {
                 "healthy": health.healthy,
+                "state": health.state,
                 "detail": health.reason,
                 "age_seconds": round(health.age_seconds, 1)
                 if health.age_seconds is not None else None,
@@ -182,11 +183,15 @@ def _overall(state: dict[str, Any]) -> dict[str, Any]:
 
     Severity ordering is deliberate: ``halted`` means new buys are blocked
     right now, ``warn`` means something needs a human look but trading
-    continues, ``ok`` means every probe answered and answered well.
+    continues, ``info`` states a fact the operator chose (the bot is off)
+    and ``ok`` means every probe answered and answered well. Lower levels
+    still carry their reasons upward, so turning the bot off never hides
+    a breaker that tripped.
     """
 
     halted: list[str] = []
     warn: list[str] = []
+    info: list[str] = []
 
     kill = state.get("kill_switch") or {}
     if kill.get("active") is True:
@@ -219,17 +224,25 @@ def _overall(state: dict[str, Any]) -> dict[str, Any]:
         if positions.get("pending_intent"):
             warn.append(f"조건주문 결과 미확인 {positions['pending_intent']}건")
 
+    from alpha_bot.auto.watchdog import ALARMING_STATES
+
     for component, health in (state.get("heartbeats") or {}).items():
-        if not health.get("healthy"):
-            # A stopped bot is a normal state, not an alarm — only flag a
-            # heartbeat that exists but went stale.
-            if "missing" not in str(health.get("detail", "")):
-                warn.append(f"{component} 하트비트 이상")
+        # Stopping the bot is a decision, not a fault, and a component that
+        # was never started has made no promise. Only unexplained silence
+        # is a warning — if shutting down normally painted the bar amber,
+        # the operator would learn to read amber as "nothing to see".
+        hb_state = health.get("state")
+        if hb_state in ALARMING_STATES:
+            warn.append(f"{component} 하트비트 이상")
+        elif hb_state == "stopped":
+            info.append(f"{component} 중지됨")
 
     if halted:
-        return {"level": "halted", "reasons": halted + warn}
+        return {"level": "halted", "reasons": halted + warn + info}
     if warn:
-        return {"level": "warn", "reasons": warn}
+        return {"level": "warn", "reasons": warn + info}
+    if info:
+        return {"level": "info", "reasons": info}
     return {"level": "ok", "reasons": []}
 
 

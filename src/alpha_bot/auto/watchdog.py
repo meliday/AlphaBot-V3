@@ -79,6 +79,22 @@ def write_heartbeat(
         return False
 
 
+# Why a state field and not just `healthy`: callers need to tell "the
+# operator stopped it" apart from "it should be running and isn't
+# answering". Both are unhealthy, only the second is an alarm. Deciding
+# that from the human-readable reason string is how the safety bar came
+# to warn on every clean Ctrl+C — the substring it matched on covered
+# only one of the two cases.
+HEARTBEAT_STATES = frozenset(
+    {"ok", "absent", "stopped", "failed", "stale", "invalid", "skew"}
+)
+
+# States that mean the process owes us a signal and is not giving one.
+# "absent" is left out on purpose: a component that was never started
+# has no promise to break, and each consumer judges that for itself.
+ALARMING_STATES = frozenset({"failed", "stale", "invalid", "skew"})
+
+
 @dataclass(frozen=True)
 class HeartbeatHealth:
     component: str
@@ -86,6 +102,17 @@ class HeartbeatHealth:
     reason: str
     age_seconds: float | None = None
     record: dict[str, Any] | None = None
+    state: str = "ok"
+
+    @property
+    def alarming(self) -> bool:
+        """True when silence is unexplained — worth waking someone for."""
+        return self.state in ALARMING_STATES
+
+    @property
+    def stopped_deliberately(self) -> bool:
+        """The process shut down cleanly and said so on its way out."""
+        return self.state == "stopped"
 
 
 def check_heartbeat(
@@ -101,33 +128,35 @@ def check_heartbeat(
         raise ValueError("max_age_seconds must be positive")
     path = heartbeat_path(component, directory)
     if not path.exists():
-        return HeartbeatHealth(component, False, f"heartbeat missing: {path}")
+        return HeartbeatHealth(component, False, f"heartbeat missing: {path}", state="absent")
     try:
         record = json.loads(path.read_text(encoding="utf-8"))
         if record.get("component") != component:
             raise ValueError("component mismatch")
         updated = float(record["updated_epoch"])
     except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
-        return HeartbeatHealth(component, False, f"heartbeat invalid: {exc}")
+        return HeartbeatHealth(component, False, f"heartbeat invalid: {exc}", state="invalid")
 
     now = time.time() if now_epoch is None else now_epoch
     age = now - updated
     status = str(record.get("status", "running"))
     if status in {"stopped", "failed"}:
         return HeartbeatHealth(
-            component, False, f"process reported status={status}", max(age, 0.0), record
+            component, False, f"process reported status={status}", max(age, 0.0), record,
+            state="stopped" if status == "stopped" else "failed",
         )
     if age < -30:
         return HeartbeatHealth(
-            component, False, f"heartbeat timestamp is {abs(age):.0f}s in the future", age, record
+            component, False, f"heartbeat timestamp is {abs(age):.0f}s in the future", age, record,
+            state="skew",
         )
     if age > max_age_seconds:
         return HeartbeatHealth(
             component, False,
             f"heartbeat stale: {age:.0f}s > {max_age_seconds:.0f}s",
-            age, record,
+            age, record, state="stale",
         )
-    return HeartbeatHealth(component, True, "ok", max(age, 0.0), record)
+    return HeartbeatHealth(component, True, "ok", max(age, 0.0), record, state="ok")
 
 
 def sleep_with_heartbeat(

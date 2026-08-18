@@ -73,25 +73,50 @@ class VerdictTests(unittest.TestCase):
         self.assertEqual(verdict["level"], "ok")
 
     def test_an_absent_heartbeat_is_not_an_alarm(self):
-        # A stopped bot is a normal state; only a stale heartbeat is news.
+        # A component nobody started has made no promise to break.
         verdict = _overall(state(heartbeats={
-            "auto": {"healthy": False, "detail": "heartbeat missing: runtime/auto.json"}
+            "auto": {"healthy": False, "state": "absent", "detail": "heartbeat missing"}
         }))
         self.assertEqual(verdict["level"], "ok")
 
-    def test_a_stale_heartbeat_warns(self):
+    def test_a_deliberate_stop_reads_as_info_not_a_warning(self):
+        """Turning the bot off is a decision, and decisions are not faults.
+
+        The verdict used to be read off the reason string, which matched
+        only the missing-file case — so every clean Ctrl+C painted the bar
+        amber. An indicator that cries wolf on normal operation is one the
+        operator stops reading.
+        """
         verdict = _overall(state(heartbeats={
-            "auto": {"healthy": False, "detail": "heartbeat stale: 4000s > 900s"}
+            "auto": {"healthy": False, "state": "stopped",
+                     "detail": "process reported status=stopped"}
         }))
-        self.assertEqual(verdict["level"], "warn")
+        self.assertEqual(verdict["level"], "info")
+        self.assertEqual(verdict["reasons"], ["auto 중지됨"])
+
+    def test_a_stale_or_failed_heartbeat_warns(self):
+        for hb_state in ("stale", "failed", "invalid", "skew"):
+            verdict = _overall(state(heartbeats={
+                "auto": {"healthy": False, "state": hb_state, "detail": hb_state}
+            }))
+            self.assertEqual(verdict["level"], "warn", hb_state)
 
     def test_halted_reasons_include_warnings_too(self):
         verdict = _overall(state(
             kill_switch={"active": True, "reason": ""},
-            heartbeats={"auto": {"healthy": False, "detail": "heartbeat stale: 9999s"}},
+            heartbeats={"auto": {"healthy": False, "state": "stale", "detail": "stale"}},
         ))
         self.assertEqual(verdict["level"], "halted")
         self.assertEqual(len(verdict["reasons"]), 2)
+
+    def test_switching_the_bot_off_never_hides_a_halt(self):
+        """The lower level must not swallow the reason above it."""
+        verdict = _overall(state(
+            kill_switch={"active": True, "reason": "점검"},
+            heartbeats={"auto": {"healthy": False, "state": "stopped", "detail": "s"}},
+        ))
+        self.assertEqual(verdict["level"], "halted")
+        self.assertIn("auto 중지됨", verdict["reasons"])
 
 
 class ResilienceTests(unittest.TestCase):
