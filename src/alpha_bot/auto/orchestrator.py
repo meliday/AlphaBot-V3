@@ -31,7 +31,7 @@ from alpha_bot.auto.position_manager import (
     should_force_exit,
     trigger_forced_exit,
 )
-from alpha_bot.auto.sizing import compute_position_size, usable_cash
+from alpha_bot.auto.sizing import compute_position_size, sizing_base_value, usable_cash
 from alpha_bot.config import AppConfig, load_watchlist
 from alpha_bot.market_hours import market_status
 from alpha_bot.market_regime import get_regime
@@ -311,15 +311,19 @@ def run_auto_iteration(
                     continue
                 # Position-size cap also guards the fixed-quantity path — a
                 # fat-fingered --quantity must not concentrate the account.
-                if config.max_position_pct > 0 and bal.total_value > 0:
-                    budget = bal.total_value * (config.max_position_pct / 100.0)
-                    if estimated_cost > budget:
-                        say(
-                            f"  🧢 {ticker} 포지션 상한 초과: 필요 ~{estimated_cost:.0f}{bal.currency} "
-                            f"> 한도 {budget:.0f}{bal.currency} "
-                            f"({config.max_position_pct:.0f}% of 총평가) — 매수 건너뜀"
-                        )
-                        continue
+                # Same base as auto-sizing (FX-unified portfolio when the
+                # broker can price it) so the two caps cannot disagree.
+                if config.max_position_pct > 0:
+                    base_value, base_label = sizing_base_value(broker, bal)
+                    if base_value > 0:
+                        budget = base_value * (config.max_position_pct / 100.0)
+                        if estimated_cost > budget:
+                            say(
+                                f"  🧢 {ticker} 포지션 상한 초과: 필요 ~{estimated_cost:.0f}{bal.currency} "
+                                f"> 한도 {budget:.0f}{bal.currency} "
+                                f"({config.max_position_pct:.0f}% of {base_label}) — 매수 건너뜀"
+                            )
+                            continue
 
             say(f"  ➡️ {ticker} 매수 신호 → {opts.broker_name} 주문 생성 ({quantity}주)")
             order = queue.enqueue(

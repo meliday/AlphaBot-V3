@@ -157,3 +157,21 @@ class TradabilityBroker(Protocol):
 
 def supports_tradability_checks(broker: object) -> bool:
     return callable(getattr(broker, "tradability_block", None))
+
+
+class PortfolioValuationBroker(Protocol):
+    """Optional capability: whole-account value in one currency.
+
+    ``get_cash_balance`` reports a single market's sleeve, which is what a
+    cash pre-flight needs. Risk sizing needs the opposite — a percentage of
+    the *portfolio* — and summing sleeves requires an FX conversion only the
+    venue can price. Implementations raise on failure so callers can fall
+    back to sleeve-based sizing explicitly.
+    """
+
+    def portfolio_value(self, currency: str) -> float:
+        ...
+
+
+def supports_portfolio_valuation(broker: object) -> bool:
+    return callable(getattr(broker, "portfolio_value", None))

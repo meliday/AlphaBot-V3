@@ -379,6 +379,21 @@ BLOCKING_STOCK_WARNINGS = frozenset({
     "VI_STATIC_AND_DYNAMIC",
 })
 
+# Portfolio valuation costs four calls (holdings, two buying-power, FX), and
+# the orchestrator sizes every buy candidate in one sweep. A short TTL keeps
+# a watchlist-sized loop to one valuation without hiding intraday moves.
+_PORTFOLIO_VALUE_TTL_SECONDS = 60.0
+
+
+def _safe_amount(value: Any) -> float:
+    if value in (None, ""):
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 # Toss's fat-finger threshold: orders at or above this notional need explicit
 # acknowledgement via confirmHighValueOrder.
 _HIGH_VALUE_ORDER_KRW = 100_000_000
@@ -405,6 +420,8 @@ class TossBroker:
         self.client = client or TossRestClient(self.settings)
         self._account_seq = self.settings.account_seq
         self._security_types: dict[str, str] = {}
+        # currency → (monotonic timestamp, value). See portfolio_value().
+        self._portfolio_value_cache: dict[str, tuple[float, float]] = {}
 
     @property
     def mode(self) -> str:
@@ -1099,6 +1116,81 @@ class TossBroker:
                 )
             )
         return positions
+
+    # ── PortfolioValuationBroker capability ──────────────────────────
+
+    def portfolio_value(self, currency: str) -> float:
+        """Whole-account value expressed in ``currency``.
+
+        ``get_cash_balance`` deliberately reports one market's sleeve, which
+        is what a cash pre-flight needs. Risk sizing needs the opposite: a
+        percentage of *the portfolio*, not of whichever sleeve the candidate
+        happens to trade in. Without this, an account that is 90% KRW sizes
+        US trades against the remaining 10% and the same setup gets a wildly
+        different budget depending only on where the money currently sits.
+
+        Toss reports holdings already split by currency and never converts
+        across them, so the conversion happens here using the매매기준율
+        (``midRate``) rather than the buy rate — a valuation should not
+        include the dealing spread.
+        """
+
+        target = currency.upper()
+        if target not in {"KRW", "USD"}:
+            raise BrokerError(f"Unsupported valuation currency: {target}")
+
+        now = time.monotonic()
+        cached = self._portfolio_value_cache.get(target)
+        if cached and (now - cached[0]) < _PORTFOLIO_VALUE_TTL_SECONDS:
+            return cached[1]
+
+        holdings_raw = self.client.request(
+            "GET", "/api/v1/holdings", account_seq=self.account_seq, idempotent=True
+        )
+        amounts = (
+            ((holdings_raw.get("result") or {}).get("marketValue") or {}).get("amount")
+            or {}
+        )
+        krw = _safe_amount(amounts.get("krw"))
+        usd = _safe_amount(amounts.get("usd"))
+
+        for code in ("KRW", "USD"):
+            raw = self.client.request(
+                "GET",
+                "/api/v1/buying-power",
+                params={"currency": code},
+                account_seq=self.account_seq,
+                idempotent=True,
+            )
+            cash = _safe_amount((raw.get("result") or {}).get("cashBuyingPower"))
+            if code == "KRW":
+                krw += cash
+            else:
+                usd += cash
+
+        rate = self.usd_krw_rate()
+        total_krw = krw + usd * rate
+        value = total_krw if target == "KRW" else total_krw / rate
+
+        self._portfolio_value_cache[target] = (now, value)
+        return value
+
+    def usd_krw_rate(self) -> float:
+        """USD→KRW 매매기준율. Raises when the venue cannot price the pair."""
+
+        raw = self.client.request(
+            "GET",
+            "/api/v1/exchange-rate",
+            params={"baseCurrency": "USD", "quoteCurrency": "KRW"},
+            idempotent=True,
+        )
+        result = raw.get("result") or {}
+        # midRate is the interbank reference; `rate` bakes in the dealing
+        # spread and would overstate the USD sleeve.
+        rate = _safe_amount(result.get("midRate")) or _safe_amount(result.get("rate"))
+        if rate <= 0:
+            raise BrokerError("Toss exchange-rate response did not include a usable rate.")
+        return rate
 
     def get_cash_balance(self, market: Market) -> AccountBalance:
         currency = "KRW" if market == "KR" else "USD"
