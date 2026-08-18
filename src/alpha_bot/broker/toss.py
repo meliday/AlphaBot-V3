@@ -11,7 +11,7 @@ import urllib.parse
 import urllib.request
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Literal
@@ -49,6 +49,10 @@ class TossSettings:
     base_url: str = "https://openapi.tossinvest.com"
     timeout_seconds: float = 20.0
     enable_live_orders: bool = False
+    # Explicit acknowledgement for orders at/above Toss's 100M KRW
+    # fat-finger threshold. Left off so an oversized order surfaces as a
+    # loud local refusal rather than reaching the venue.
+    allow_high_value_orders: bool = False
 
     @classmethod
     def from_env(cls) -> "TossSettings":
@@ -64,6 +68,9 @@ class TossSettings:
             timeout_seconds=float(os.environ.get("TOSS_TIMEOUT_SECONDS", "20")),
             enable_live_orders=os.environ.get(
                 "TOSS_ENABLE_LIVE_ORDERS", ""
+            ).strip().lower() in {"1", "true", "yes", "on"},
+            allow_high_value_orders=os.environ.get(
+                "TOSS_ALLOW_HIGH_VALUE_ORDERS", ""
             ).strip().lower() in {"1", "true", "yes", "on"},
         )
         settings.validate()
@@ -356,6 +363,36 @@ class TossRestClient:
                 raise BrokerError(f"Toss network error: {exc}") from exc
 
 
+# Exchange designations that make a symbol unbuyable for this strategy.
+# LIQUIDATION_TRADING and INVESTMENT_RISK are non-negotiable (delisting and
+# pre-suspension states). INVESTMENT_WARNING and OVERHEATED are included
+# because both raise the margin requirement and can flip to a trading halt
+# mid-position — exactly the tail this bot has no way to manage. VI_* are
+# momentary halts: blocking simply defers the entry to a later sweep.
+BLOCKING_STOCK_WARNINGS = frozenset({
+    "LIQUIDATION_TRADING",
+    "INVESTMENT_RISK",
+    "INVESTMENT_WARNING",
+    "OVERHEATED",
+    "VI_STATIC",
+    "VI_DYNAMIC",
+    "VI_STATIC_AND_DYNAMIC",
+})
+
+# Toss's fat-finger threshold: orders at or above this notional need explicit
+# acknowledgement via confirmHighValueOrder.
+_HIGH_VALUE_ORDER_KRW = 100_000_000
+
+# Toss requires an explicit expiry on every conditional order. Positions can
+# outlive it, so the sync layer re-arms whenever the venue reports EXPIRED.
+_PROTECTIVE_STOP_EXPIRE_DAYS = 30
+
+
+def _is_missing_conditional_order(exc: BrokerOrderRejected) -> bool:
+    code = (exc.code or "").lower()
+    return "not-found" in code or "not_found" in code
+
+
 class TossBroker:
     name = "toss"
 
@@ -407,6 +444,43 @@ class TossBroker:
     def place_order(self, order: OrderRequest) -> OrderResult:
         return self._submit_order(self.normalize_order(order))
 
+    def _guard_high_value(
+        self, order: OrderRequest, payload: dict[str, Any]
+    ) -> None:
+        """Handle Toss's fat-finger threshold on orders worth >= 100M KRW.
+
+        Toss rejects such orders with ``400 confirm-high-value-required``
+        unless the caller explicitly acknowledges the size. Silently setting
+        the flag would discard a real safety net, so the default is to refuse
+        locally with a clear message instead of burning a venue rejection
+        that the retry policy would then treat as a permanent block.
+
+        Set ``TOSS_ALLOW_HIGH_VALUE_ORDERS=true`` once the bot's own caps
+        (``risk_per_trade_pct``, ``max_position_pct``, the cash pre-flight)
+        are trusted to be the controlling limit.
+        """
+
+        price = order.limit_price
+        if order.order_type != "limit" or price is None:
+            # Market orders carry no price to check. Toss applies the same
+            # threshold server-side, so an oversized market order surfaces as
+            # a rejection rather than slipping through unnoticed.
+            return
+        notional = price * order.quantity
+        if order.market != "KR":
+            return  # Threshold is defined in KRW; USD notionals are converted venue-side.
+        if notional < _HIGH_VALUE_ORDER_KRW:
+            return
+        if not self.settings.allow_high_value_orders:
+            raise BrokerOrderRejected(
+                f"주문금액 {notional:,.0f}원이 고액주문 기준({_HIGH_VALUE_ORDER_KRW:,.0f}원) "
+                "이상입니다. 사이징 설정을 확인하고, 의도한 규모라면 "
+                "TOSS_ALLOW_HIGH_VALUE_ORDERS=true 로 명시 승인하세요.",
+                code="confirm-high-value-required",
+                retryable=False,
+            )
+        payload["confirmHighValueOrder"] = True
+
     def recover_order(self, order: OrderRequest) -> OrderResult:
         """Replay an unresolved order using Toss's 10-minute idempotency key."""
 
@@ -437,6 +511,7 @@ class TossBroker:
             payload["price"] = _decimal_string(
                 order.limit_price, integer_only=order.market == "KR"
             )
+        self._guard_high_value(order, payload)
         try:
             raw = self.client.request(
                 "POST",
@@ -470,6 +545,74 @@ class TossBroker:
             security_type=security_type,
         )
         return replace(order, limit_price=normalized)
+
+    # ── TradabilityBroker capability ─────────────────────────────────
+
+    def tradability_block(self, ticker: str, market: Market) -> str | None:
+        """Reason this symbol must not be bought right now, or None.
+
+        Covers the states a price/volume screen cannot see: delisting
+        procedures, suspensions, exchange designations, and momentary VI
+        halts. Raises on transport failure so the caller can fail closed —
+        an unverifiable symbol is not a buyable symbol.
+        """
+
+        meta = self._stock_metadata(ticker)
+        status = str(meta.get("status") or "").upper()
+        if status and status != "ACTIVE":
+            return f"상장 상태 {status}"
+
+        detail = meta.get("koreanMarketDetail")
+        if isinstance(detail, dict):
+            if detail.get("liquidationTrading"):
+                return "정리매매 진행 중"
+            if detail.get("krxTradingSuspended"):
+                return "KRX 거래정지"
+
+        raw = self.client.request(
+            "GET",
+            "/api/v1/stocks/"
+            + urllib.parse.quote(ticker.upper(), safe="")
+            + "/warnings",
+            account_seq=None,
+            idempotent=True,
+        )
+        rows = raw.get("result") or []
+        if not isinstance(rows, list):
+            raise BrokerError(f"Toss warnings payload was not an array for {ticker}.")
+        hits = [
+            str(row.get("warningType") or "").upper()
+            for row in rows
+            if isinstance(row, dict)
+            and str(row.get("warningType") or "").upper() in BLOCKING_STOCK_WARNINGS
+        ]
+        if hits:
+            return "매수 유의 지정: " + ", ".join(sorted(set(hits)))
+        return None
+
+    def _stock_metadata(self, ticker: str) -> dict[str, Any]:
+        symbol = ticker.upper()
+        raw = self.client.request(
+            "GET",
+            "/api/v1/stocks",
+            params={"symbols": symbol},
+            idempotent=True,
+        )
+        rows = raw.get("result") or []
+        match = next(
+            (
+                row for row in rows
+                if isinstance(row, dict)
+                and str(row.get("symbol") or "").upper() == symbol
+            ),
+            None,
+        )
+        if not match:
+            raise BrokerError(f"Toss stock metadata not found for {symbol}.")
+        kind = str(match.get("securityType") or "")
+        if kind:
+            self._security_types[symbol] = kind
+        return match
 
     def _security_type(self, ticker: str) -> str:
         symbol = ticker.upper()
@@ -608,6 +751,112 @@ class TossBroker:
             + urllib.parse.quote(conditional_order_id, safe=""),
             payload=None,
             idempotent=False,
+        )
+
+    # ── ProtectiveStopBroker capability ──────────────────────────────
+    #
+    # A SINGLE + MARKET conditional sell mirroring the position's effective
+    # stop. SINGLE (not OCO) because the polling ladder scales out half at
+    # target-1, and an OCO shares one quantity across both legs — it cannot
+    # express "sell half here, all of it there". Targets stay with the bot;
+    # only the disaster brake lives at the venue.
+    #
+    # Coverage limit: Toss triggers KR conditional orders during the KRX
+    # regular session only (US triggers in every tradable session). This
+    # protects against the bot being down mid-session, not against overnight
+    # gaps — nothing can, since the market is shut.
+
+    def place_protective_stop(
+        self,
+        *,
+        ticker: str,
+        market: Market,
+        quantity: int,
+        stop_price: float,
+        client_order_id: str,
+    ) -> str:
+        result = self.create_conditional_order(
+            self._protective_stop_request(
+                ticker=ticker,
+                market=market,
+                quantity=quantity,
+                stop_price=stop_price,
+                client_order_id=client_order_id,
+            )
+        )
+        return result.conditional_order_id
+
+    def amend_protective_stop(
+        self,
+        stop_id: str,
+        *,
+        ticker: str,
+        market: Market,
+        quantity: int,
+        stop_price: float,
+    ) -> str:
+        # Toss implements modify as cancel+create and returns a NEW id, so the
+        # caller must persist whatever comes back.
+        result = self.modify_conditional_order(
+            stop_id,
+            self._protective_stop_request(
+                ticker=ticker,
+                market=market,
+                quantity=quantity,
+                stop_price=stop_price,
+                client_order_id=None,
+            ),
+        )
+        return result.conditional_order_id
+
+    def cancel_protective_stop(self, stop_id: str) -> None:
+        try:
+            self.cancel_conditional_order(stop_id)
+        except BrokerOrderRejected as exc:
+            # Already gone (filled, expired, cancelled elsewhere) is the
+            # desired end state — cancellation must be idempotent.
+            if _is_missing_conditional_order(exc):
+                logger.info("Protective stop %s already absent at Toss.", stop_id)
+                return
+            raise
+
+    def protective_stop_status(self, stop_id: str) -> str | None:
+        try:
+            detail = self.get_conditional_order(stop_id)
+        except TossApiError as exc:
+            if exc.status == 404:
+                return None
+            raise
+        except BrokerOrderRejected as exc:
+            if _is_missing_conditional_order(exc):
+                return None
+            raise
+        return str(detail.get("status") or "") or None
+
+    def _protective_stop_request(
+        self,
+        *,
+        ticker: str,
+        market: Market,
+        quantity: int,
+        stop_price: float,
+        client_order_id: str | None,
+    ) -> TossConditionalOrderRequest:
+        return TossConditionalOrderRequest(
+            ticker=ticker,
+            market=market,
+            strategy="SINGLE",
+            quantity=quantity,
+            order_type="market",
+            expire_date=date.today() + timedelta(days=_PROTECTIVE_STOP_EXPIRE_DAYS),
+            first=TossConditionLeg(
+                order_side="sell",
+                trigger_price=stop_price,
+                # Round the trigger down so the armed stop is never tighter
+                # than the level the strategy computed.
+                aggressive=True,
+            ),
+            client_order_id=client_order_id,
         )
 
     def _require_live_orders(self) -> None:

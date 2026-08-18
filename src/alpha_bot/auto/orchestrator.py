@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 
 from alpha_bot.approval import ApprovalQueue
 from alpha_bot.approval.queue import order_belongs_to_broker
+from alpha_bot.broker.base import supports_tradability_checks
 from alpha_bot.auto.analysis import analyze_ticker, make_broker, make_provider
 from alpha_bot.auto.guards import daily_loss_exceeded, kill_switch_active
 from alpha_bot.auto.position_manager import (
@@ -118,7 +119,10 @@ def run_auto_iteration(
         logger.warning("Queue-broker reconciliation failed: %s", exc)
 
     try:
-        manage_open_positions(queue, broker, provider, say)
+        manage_open_positions(
+            queue, broker, provider, say,
+            protective_stops=config.protective_stop,
+        )
     except Exception as exc:
         logger.exception("Position management failed")
         say(f"⚠️ 포지션 모니터링 실패: {exc}")
@@ -258,6 +262,14 @@ def run_auto_iteration(
                 continue  # Already in position — skip new entry regardless of signal
 
             if report.signal not in {"Buy", "Strong Buy"}:
+                continue
+
+            # ── Venue-side tradability gate ──
+            # Runs only for actual buy candidates so the extra calls scale
+            # with signals, not with watchlist size.
+            blocked, block_reason = _tradability_block(broker, ticker, market)
+            if blocked:
+                say(f"  ⛔ {ticker} 매수 불가 — {block_reason}")
                 continue
 
             entry_price = round(report.trade_plan.entry_high, 2)
@@ -411,6 +423,26 @@ def _on_cooldown(
             if created >= cutoff:
                 return True
     return False
+
+
+def _tradability_block(broker, ticker: str, market: str) -> tuple[bool, str]:
+    """Ask the venue whether this symbol may be bought right now.
+
+    Fails **closed** per ticker, unlike the regime and LLM gates which fail
+    open. Those degrade signal quality; this one guards against buying into a
+    delisting or a suspension, where being wrong is not something the exit
+    ladder can recover from. An unverifiable symbol just waits for the next
+    sweep, so the cost of failing closed is one iteration of delay.
+    """
+
+    if not supports_tradability_checks(broker):
+        return False, ""
+    try:
+        reason = broker.tradability_block(ticker, market)
+    except Exception as exc:
+        logger.warning("Tradability check failed for %s:%s: %s", market, ticker, exc)
+        return True, f"거래 가능 여부 확인 실패 (안전상 매수 보류): {exc}"
+    return (True, reason) if reason else (False, "")
 
 
 def _rejection_retry_block(

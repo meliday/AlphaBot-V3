@@ -51,6 +51,11 @@ class AppConfig:
     # on expanding volume (see StrategyParams.require_breakout_confirmation).
     # Off by default — the pre-pivot squeeze entry is also a supported style.
     require_breakout: bool = False
+    # Mirror the effective stop as a broker-side conditional order so held
+    # positions stay protected while the bot process is down. Off by default:
+    # enabling it makes the bot place real standing orders at the venue, and
+    # only brokers implementing ProtectiveStopBroker (Toss) honour it.
+    protective_stop: bool = False
 
 
 def load_dotenv(path: Path = Path(".env")) -> None:
@@ -107,6 +112,7 @@ def load_config(path: Path = Path("config.yaml")) -> AppConfig:
         daily_loss_limit_pct=float(values.get("daily_loss_limit_pct", 3.0)),
         stale_order_minutes=int(values.get("stale_order_minutes", 60)),
         require_breakout=bool(values.get("require_breakout", False)),
+        protective_stop=bool(values.get("protective_stop", False)),
     )
 
 

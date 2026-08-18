@@ -18,6 +18,11 @@ from typing import Callable
 
 from alpha_bot.approval import ApprovalQueue
 from alpha_bot.approval.queue import order_belongs_to_broker
+from alpha_bot.auto.protective_stops import (
+    release_protective_stop,
+    stop_engaged,
+    sync_protective_stop,
+)
 from alpha_bot.broker.base import Broker
 from alpha_bot.data import DataProvider
 from alpha_bot.market_hours import market_status
@@ -208,6 +213,9 @@ def trigger_forced_exit(
         return
     if qty <= 0:
         return
+    buy, released = release_protective_stop(queue, broker, buy, say)
+    if not released:
+        return
     say(f"  🚨 {market}:{ticker} {reason_label} → 시장가 매도 {qty}주 ({detail})")
     try:
         sell = queue.enqueue(
@@ -308,6 +316,9 @@ def reconcile_queue_with_broker(
         if broker_qty.get((market, ticker), 0) > 0:
             continue  # Broker still holds; nothing to reconcile.
         for buy in buy_list:
+            # The shares are gone, so a surviving venue stop could later sell a
+            # position we no longer own. Retire it before writing the close.
+            buy, _ = release_protective_stop(queue, broker, buy, lambda _msg: None)
             try:
                 queue.mark_externally_closed(
                     buy.id, broker_name=broker.name, broker=broker
@@ -477,6 +488,8 @@ def manage_open_positions(
     broker: Broker,
     provider: DataProvider,
     say: Callable[[str], None],
+    *,
+    protective_stops: bool = False,
 ) -> None:
     """For each filled buy without a completed exit, walk the exit ladder:
 
@@ -485,6 +498,12 @@ def manage_open_positions(
         close − 2×ATR, whichever is higher);
       * after target-1: trailing stop (market-sell the runner) or target-2
         (limit-sell the runner), with the trail ratcheting up every pass.
+
+    When ``protective_stops`` is on and the broker supports it, the currently
+    effective stop is also mirrored as a venue-side conditional order so a
+    dead bot process no longer means an unprotected position. Exactly one
+    seller is ever live: a fired venue stop suspends the ladder, and any
+    bot-initiated sell releases the venue stop first.
     """
 
     orders = queue.list_orders()
@@ -566,13 +585,26 @@ def manage_open_positions(
         current = live_price_cache[key] or candles[-1].close
 
         scaled_out = _has_completed_scale_out(buy, by_id)
+
+        # A fired venue stop is already selling these shares; never race it.
+        if stop_engaged(broker, buy, say):
+            continue
+
         decision = _evaluate_exit(
             buy, current, qty_held, scaled_out=scaled_out
         )
         if decision is None:
-            # Runner with no exit hit: keep tightening the trail.
+            # Runner with no exit hit: keep tightening the trail, then push the
+            # resulting level out to the venue so downtime stays covered.
             if scaled_out:
                 _ratchet_trail(queue, buy, by_id, candles, current, say)
+            by_id[buy.id] = sync_protective_stop(
+                queue, broker, by_id.get(buy.id, buy),
+                quantity=qty_held,
+                scaled_out=scaled_out,
+                say=say,
+                enabled=protective_stops,
+            )
             continue
 
         qty = (qty_held + 1) // 2 if decision.scale_out else qty_held
@@ -583,6 +615,10 @@ def manage_open_positions(
         # stale "rejected" record. Reconcile silently and skip.
         actual_qty = _broker_qty(market, ticker)
         if actual_qty == 0:
+            # Same reasoning as reconciliation: never leave a standing stop
+            # behind on a position that no longer exists.
+            buy, _ = release_protective_stop(queue, broker, buy, say)
+            by_id[buy.id] = buy
             try:
                 queue.mark_externally_closed(
                     buy.id, broker_name=broker.name, broker=broker
@@ -602,6 +638,14 @@ def manage_open_positions(
             )
             qty = actual_qty
         if qty <= 0:
+            continue
+
+        # Hand selling rights back to the bot before it places its own order.
+        # If the venue refuses to release, abort: two live sellers would
+        # liquidate more shares than the account holds.
+        buy, released = release_protective_stop(queue, broker, buy, say)
+        by_id[buy.id] = buy
+        if not released:
             continue
 
         _submit_exit(

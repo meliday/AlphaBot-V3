@@ -311,6 +311,85 @@ class MockBroker:
 
     # ── Private I/O ─────────────────────────────────────────────────
 
+    # ── ProtectiveStopBroker capability (simulated) ─────────────────
+    #
+    # Stops are recorded in mock_state.json and stay ``WATCHING`` forever —
+    # the mock never fires them. That is deliberate: this exists so the
+    # arm/amend/cancel bookkeeping in the sync layer is exercisable without a
+    # venue, not to simulate stop execution. Backtests remain the place where
+    # stop fills are modelled.
+
+    def place_protective_stop(
+        self,
+        *,
+        ticker: str,
+        market: Market,
+        quantity: int,
+        stop_price: float,
+        client_order_id: str,
+    ) -> str:
+        if quantity <= 0:
+            raise BrokerError("Protective stop quantity must be positive.")
+        if stop_price <= 0:
+            raise BrokerError("Protective stop price must be positive.")
+        state = self._read_state()
+        stops = state.setdefault("protective_stops", {})
+        # Honour the venue's idempotency contract: replaying one
+        # client_order_id must not create a second stop.
+        for existing_id, row in stops.items():
+            if row.get("client_order_id") == client_order_id:
+                return existing_id
+        stop_id = f"MOCKCOND-{uuid.uuid4().hex[:12].upper()}"
+        stops[stop_id] = {
+            "ticker": ticker.upper(),
+            "market": market,
+            "quantity": int(quantity),
+            "stop_price": float(stop_price),
+            "client_order_id": client_order_id,
+            "status": "WATCHING",
+        }
+        self._write_state(state)
+        return stop_id
+
+    def amend_protective_stop(
+        self,
+        stop_id: str,
+        *,
+        ticker: str,
+        market: Market,
+        quantity: int,
+        stop_price: float,
+    ) -> str:
+        if quantity <= 0:
+            raise BrokerError("Protective stop quantity must be positive.")
+        state = self._read_state()
+        stops = state.setdefault("protective_stops", {})
+        if stop_id not in stops:
+            raise BrokerError(f"Unknown protective stop: {stop_id}")
+        row = stops.pop(stop_id)
+        # Mirror Toss: modify is cancel+create and yields a new id.
+        new_id = f"MOCKCOND-{uuid.uuid4().hex[:12].upper()}"
+        row.update(
+            ticker=ticker.upper(),
+            market=market,
+            quantity=int(quantity),
+            stop_price=float(stop_price),
+            status="WATCHING",
+        )
+        stops[new_id] = row
+        self._write_state(state)
+        return new_id
+
+    def cancel_protective_stop(self, stop_id: str) -> None:
+        state = self._read_state()
+        stops = state.setdefault("protective_stops", {})
+        if stops.pop(stop_id, None) is not None:
+            self._write_state(state)
+
+    def protective_stop_status(self, stop_id: str) -> str | None:
+        row = self._read_state().get("protective_stops", {}).get(stop_id)
+        return str(row["status"]) if row else None
+
     def _read(self) -> list[dict]:
         if not self.ledger_path.exists():
             return []

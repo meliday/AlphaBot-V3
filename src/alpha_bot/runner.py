@@ -316,7 +316,10 @@ def cmd_monitor(args: argparse.Namespace) -> int:
     broker = make_broker(broker_name)
 
     from alpha_bot.auto.live_monitor import LiveExitMonitor
-    monitor = LiveExitMonitor(queue, broker, provider, say=print)
+    monitor = LiveExitMonitor(
+        queue, broker, provider, say=print,
+        protective_stops=config.protective_stop,
+    )
     stream = None
     watch: set[str] = set()
     if broker_name == "kis":

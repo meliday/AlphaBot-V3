@@ -68,7 +68,16 @@ def build_trade_plan(candles: list[Candle], sma50: float, min_rr: float = 1.5) -
 
     entry_low = close * 0.99
     entry_high = close * 1.01
-    rr_ratio = calculate_rr(close, stop_loss, target1)
+    # R/R is measured at ``entry_high``, NOT at ``close``.
+    #
+    # Every caller posts its buy limit at entry_high, so a ratio computed from
+    # close describes a trade the bot never takes: the risk leg is understated
+    # by 1% of price and the reward leg overstated by the same amount. With a
+    # 2.5% stop that inflates the reported ratio by ~75%, and the min_rr gate
+    # (plus the high-R/R score relaxation) then passes setups on numbers that
+    # do not exist. entry_high is the worst fill inside the buy zone, which is
+    # the honest floor for a gate that decides whether to risk money.
+    rr_ratio = calculate_rr(entry_high, stop_loss, target1)
 
     alternate_entry = None
     alternate_rr = None

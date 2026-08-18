@@ -169,9 +169,11 @@ class LiveExitMonitor:
         *,
         candle_ttl: float = 300.0,
         say: Callable[[str], None] = print,
+        protective_stops: bool = False,
     ):
         self.queue = queue
         self.broker = broker
+        self.protective_stops = protective_stops
         self.prices = TickPriceCache()
         self.provider = StreamPricedProvider(provider, self.prices, candle_ttl=candle_ttl)
         self.say = say
@@ -205,7 +207,10 @@ class LiveExitMonitor:
             return False
         self._last_generation = generation
         self._last_evaluation = time.monotonic()
-        manage_open_positions(self.queue, self.broker, self.provider, self.say)
+        manage_open_positions(
+            self.queue, self.broker, self.provider, self.say,
+            protective_stops=self.protective_stops,
+        )
         return True
 
     def evaluate_if_due(self, rest_poll_interval: float = 15.0) -> bool:
@@ -221,7 +226,10 @@ class LiveExitMonitor:
             return False
         self._last_generation = self.prices.generation
         self._last_evaluation = now
-        manage_open_positions(self.queue, self.broker, self.provider, self.say)
+        manage_open_positions(
+            self.queue, self.broker, self.provider, self.say,
+            protective_stops=self.protective_stops,
+        )
         return True
 
     def market_open(self, market: Market = "KR") -> bool:

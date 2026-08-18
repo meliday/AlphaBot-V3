@@ -285,6 +285,14 @@ class OrderCandidate:
     # Ratcheting trailing stop for the runner half after a target-1 scale-out.
     # Only ever moves up; floored at breakeven (avg_fill_price).
     trail_stop: float | None = None
+    # Broker-side protective stop (Toss conditional order) mirroring the
+    # currently effective stop. The polling ladder still owns targets and the
+    # trail ratchet; this is the disaster brake that keeps working when the
+    # bot process is not. ``_price``/``_quantity`` record what is actually
+    # armed at the broker so we only re-send on a real divergence.
+    protective_stop_id: str | None = None
+    protective_stop_price: float | None = None
+    protective_stop_quantity: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -321,6 +329,9 @@ class OrderCandidate:
             "exit_reason": self.exit_reason,
             "partial_exit_ids": list(self.partial_exit_ids),
             "trail_stop": self.trail_stop,
+            "protective_stop_id": self.protective_stop_id,
+            "protective_stop_price": self.protective_stop_price,
+            "protective_stop_quantity": self.protective_stop_quantity,
         }
 
     @classmethod
@@ -378,6 +389,13 @@ class OrderCandidate:
             exit_reason=row.get("exit_reason"),
             partial_exit_ids=[str(x) for x in (row.get("partial_exit_ids") or [])],
             trail_stop=_optional_float(row.get("trail_stop")),
+            protective_stop_id=(
+                str(row["protective_stop_id"])
+                if row.get("protective_stop_id")
+                else None
+            ),
+            protective_stop_price=_optional_float(row.get("protective_stop_price")),
+            protective_stop_quantity=int(row.get("protective_stop_quantity", 0) or 0),
         )
 
 

@@ -73,3 +73,87 @@ class Broker(Protocol):
     ) -> OrderResult:
         """Cancel the unfilled remainder of a working order."""
         ...
+
+
+class ProtectiveStopBroker(Protocol):
+    """Optional capability: broker-side stop orders that survive bot downtime.
+
+    Implemented by adapters whose venue can watch a price and submit the
+    exit itself (Toss conditional orders). Detect support with
+    :func:`supports_protective_stops` rather than ``isinstance`` — the rest
+    of the codebase duck-types broker capabilities the same way.
+
+    Implementations must be idempotent per ``client_order_id`` where the
+    venue allows it, and must raise ``BrokerOrderRejected`` for permanent
+    failures so the caller can stop retrying.
+    """
+
+    def place_protective_stop(
+        self,
+        *,
+        ticker: str,
+        market: Market,
+        quantity: int,
+        stop_price: float,
+        client_order_id: str,
+    ) -> str:
+        """Arm a stop that sells ``quantity`` at market once price <= stop. Returns its id."""
+        ...
+
+    def amend_protective_stop(
+        self,
+        stop_id: str,
+        *,
+        ticker: str,
+        market: Market,
+        quantity: int,
+        stop_price: float,
+    ) -> str:
+        """Re-arm with new quantity/price. Returns the id to store (may differ)."""
+        ...
+
+    def cancel_protective_stop(self, stop_id: str) -> None:
+        ...
+
+    def protective_stop_status(self, stop_id: str) -> str | None:
+        """Venue status, or None when the stop no longer exists."""
+        ...
+
+
+_PROTECTIVE_STOP_METHODS = (
+    "place_protective_stop",
+    "amend_protective_stop",
+    "cancel_protective_stop",
+    "protective_stop_status",
+)
+
+
+def supports_protective_stops(broker: object) -> bool:
+    return all(callable(getattr(broker, name, None)) for name in _PROTECTIVE_STOP_METHODS)
+
+
+# Venue statuses that mean the stop has fired and an exit order now exists or
+# is being created. While a stop is in one of these states the polling ladder
+# must not submit its own sell for the same shares.
+PROTECTIVE_STOP_ENGAGED_STATUSES = frozenset({"ORDERING", "ORDERED"})
+# Statuses meaning the stop is gone and the position needs a fresh one.
+PROTECTIVE_STOP_DEAD_STATUSES = frozenset({"COMPLETED", "EXPIRED", "CANCELED"})
+
+
+class TradabilityBroker(Protocol):
+    """Optional capability: venue-side "may I buy this right now?" checks.
+
+    Covers state a price/volume screen cannot see — delisting procedures,
+    trading suspensions, exchange designations, momentary volatility halts.
+    Implementations raise on transport failure rather than returning None,
+    so callers can distinguish "verified tradable" from "unknown" and fail
+    closed on the latter.
+    """
+
+    def tradability_block(self, ticker: str, market: Market) -> str | None:
+        """Human-readable reason the symbol is unbuyable, or None if clear."""
+        ...
+
+
+def supports_tradability_checks(broker: object) -> bool:
+    return callable(getattr(broker, "tradability_block", None))
