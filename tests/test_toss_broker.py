@@ -381,3 +381,90 @@ class TossPriceProviderTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GzipBodyTests(unittest.TestCase):
+    """The live gateway gzips (at least) error bodies without being asked.
+
+    Found by the contract smoke test: undecoded, every API error became
+    mojibake with code "http-error", silently disabling all code-based
+    handling (429 pacing, 409 replay, the rejection classifier). These pin
+    the decode paths so the regression cannot return.
+    """
+
+    def test_decode_body_handles_gzip_identity_and_magic_bytes(self):
+        import gzip
+        from email.message import Message
+        from alpha_bot.broker.toss import _decode_body
+
+        labelled = Message()
+        labelled["Content-Encoding"] = "gzip"
+        self.assertEqual(
+            _decode_body(gzip.compress("한글 본문 ok".encode()), labelled),
+            "한글 본문 ok",
+        )
+        # Unlabelled but compressed — detected by the 0x1f8b magic bytes.
+        self.assertEqual(
+            _decode_body(gzip.compress(b"unlabelled"), Message()), "unlabelled"
+        )
+        # Plain identity body passes through untouched.
+        self.assertEqual(_decode_body(b"plain", Message()), "plain")
+        # Labelled gzip that is not actually gzip must not crash.
+        self.assertEqual(_decode_body(b"not-gzip", labelled), "not-gzip")
+
+    def test_error_codes_survive_a_gzipped_error_body(self):
+        import gzip
+        import io
+        import json as _json
+        import urllib.error
+        from email.message import Message
+
+        settings = TossSettings(client_id="c", client_secret="s", account_seq=1)
+        client = TossRestClient(settings)
+        body = gzip.compress(_json.dumps({
+            "error": {
+                "code": "invalid-request",
+                "message": "형식이 잘못되었습니다.",
+                "requestId": "R1",
+            }
+        }).encode())
+        headers = Message()
+        headers["Content-Encoding"] = "gzip"
+        err = urllib.error.HTTPError(
+            "https://openapi.tossinvest.com/x", 400, "Bad Request",
+            headers, io.BytesIO(body),
+        )
+        with patch.object(TossRestClient, "ensure_token", return_value="tok"), \
+             patch("urllib.request.urlopen", side_effect=err):
+            with self.assertRaises(TossApiError) as ctx:
+                client.request("GET", "/api/v1/conditional-orders/xyz", idempotent=True)
+        self.assertEqual(ctx.exception.status, 400)
+        self.assertEqual(ctx.exception.code, "invalid-request")  # not "http-error"
+        self.assertIn("형식", str(ctx.exception))
+
+
+class MissingStopStatusTests(unittest.TestCase):
+    """Live finding: Toss validates the conditional-order id *format* before
+    existence, so a malformed id yields 400 invalid-request, not the spec's
+    404. Both mean "no such stop" to the re-arm logic."""
+
+    def _broker(self, exc: TossApiError) -> TossBroker:
+        class Client:
+            def request(self, *args, **kwargs):
+                raise exc
+
+        settings = TossSettings(client_id="c", client_secret="s", account_seq=1)
+        return TossBroker(settings, client=Client())  # type: ignore[arg-type]
+
+    def test_a_404_maps_to_none(self):
+        broker = self._broker(TossApiError(404, "conditional-order-not-found", "없음"))
+        self.assertIsNone(broker.protective_stop_status("GONE"))
+
+    def test_a_malformed_id_400_maps_to_none(self):
+        broker = self._broker(TossApiError(400, "invalid-request", "형식 오류"))
+        self.assertIsNone(broker.protective_stop_status("SMOKE-NONEXISTENT-ID"))
+
+    def test_other_400_codes_keep_raising(self):
+        broker = self._broker(TossApiError(400, "account-header-required", "헤더 누락"))
+        with self.assertRaises(TossApiError):
+            broker.protective_stop_status("ANY")

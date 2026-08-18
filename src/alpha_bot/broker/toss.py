@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import gzip
 import hashlib
 import json
 import logging
@@ -9,6 +10,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
@@ -290,6 +292,10 @@ class TossRestClient:
         while True:
             headers = {
                 "Accept": "application/json",
+                # Advertised deliberately: large payloads (stocks/all is
+                # ~30KB gzipped) shrink, and _decode_body handles the
+                # decompression the gateway performs either way.
+                "Accept-Encoding": "gzip",
                 "Authorization": f"Bearer {self.ensure_token()}",
             }
             attempted_token = self._access_token
@@ -304,10 +310,10 @@ class TossRestClient:
                 with urllib.request.urlopen(
                     request, timeout=self.settings.timeout_seconds
                 ) as response:
-                    raw = response.read().decode("utf-8")
+                    raw = _decode_body(response.read(), response.headers)
                     return json.loads(raw) if raw else {}
             except urllib.error.HTTPError as exc:
-                raw = exc.read().decode("utf-8", errors="replace")
+                raw = _decode_body(exc.read(), exc.headers)
                 parsed = _json_or_empty(raw)
                 error = parsed.get("error", {}) if isinstance(parsed, dict) else {}
                 code = str(error.get("code") or parsed.get("error") or "http-error")
@@ -837,6 +843,13 @@ class TossBroker:
         except TossApiError as exc:
             if exc.status == 404:
                 return None
+            # Observed live: Toss validates the id *format* before existence,
+            # so a malformed id returns 400 invalid-request rather than 404.
+            # An id that cannot name a stop is, for the caller, a stop that
+            # does not exist. Other 400 codes (e.g. account-header-required)
+            # are real request bugs and must keep raising.
+            if exc.status == 400 and exc.code == "invalid-request":
+                return None
             raise
         except BrokerOrderRejected as exc:
             if _is_missing_conditional_order(exc):
@@ -1224,6 +1237,38 @@ class TossBroker:
             pnl_pct=(pnl / purchase * 100.0) if purchase > 0 else 0.0,
             raw={"buying_power": buying_raw, "holdings": holdings_raw},
         )
+
+
+def _decode_body(data: bytes, headers: Any) -> str:
+    """Decode a response body, decompressing when the gateway compressed it.
+
+    Discovered live by the contract smoke test: Toss's gateway gzips at
+    least some *error* bodies even when the client never advertised
+    Accept-Encoding. Decoding those bytes as UTF-8 turned every error into
+    mojibake with code "http-error", which silently disabled all
+    code-based handling (429 Retry-After pacing, 409 request-in-progress
+    replay, the rejection classifier). The magic-byte check covers
+    responses the gateway compresses without labelling.
+    """
+
+    encoding = ""
+    try:
+        encoding = str(headers.get("Content-Encoding") or "").lower()
+    except Exception:
+        pass
+    if data[:2] == b"\x1f\x8b" or "gzip" in encoding:
+        try:
+            data = gzip.decompress(data)
+        except OSError:
+            pass  # labelled gzip but is not — fall through to raw decode
+    elif "deflate" in encoding:
+        for wbits in (zlib.MAX_WBITS, -zlib.MAX_WBITS):
+            try:
+                data = zlib.decompress(data, wbits)
+                break
+            except zlib.error:
+                continue
+    return data.decode("utf-8", errors="replace")
 
 
 def _json_or_empty(raw: str) -> dict[str, Any]:

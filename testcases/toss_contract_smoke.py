@@ -209,11 +209,14 @@ def main() -> int:
             f"clientOrderId omitted from list (예상대로): {no_client_id}"
         )
 
-    @check("protective_stop_status(nonexistent) → None via 404")
+    @check("protective_stop_status(nonexistent) → None")
     def missing_stop_status():
+        # Live finding: a malformed id gets 400 invalid-request (format is
+        # validated before existence), not the spec's 404 — both must map
+        # to None or the re-arm logic would crash instead of recovering.
         status = broker.protective_stop_status("SMOKE-NONEXISTENT-ID")
         assert status is None, f"expected None for a missing stop, got {status!r}"
-        return "404 → None (재무장 로직의 소멸 감지 경로 검증)"
+        return "400/404 → None (재무장 로직의 소멸 감지 경로 검증)"
 
     token()
     accounts()
@@ -241,7 +244,7 @@ def main() -> int:
             "holdings summary shape", "buying power KRW/USD",
             "portfolio valuation end-to-end",
             "conditional-order list (OPEN) + protective-stop filter",
-            "protective_stop_status(nonexistent) → None via 404",
+            "protective_stop_status(nonexistent) → None",
         ):
             RESULTS.append(("SKIP", name, "계좌 없음"))
 
