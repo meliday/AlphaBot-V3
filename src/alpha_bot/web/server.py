@@ -77,6 +77,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         routes: dict[str, Any] = {
             "/": self._serve_dashboard,
+            "/static/dashboard.css": lambda: self._serve_asset(
+                "dashboard.css", "text/css; charset=utf-8"
+            ),
             "/api/analyze": lambda: self._dispatch(_analysis.handle_analyze(params, _serialise)),
             "/api/scan": lambda: self._dispatch(_analysis.handle_scan(params, _serialise)),
             "/api/orders": lambda: self._dispatch(_orders.handle_orders(_serialise)),
@@ -150,6 +153,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
         content = html_path.read_bytes()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(content)))
+        self.end_headers()
+        self.wfile.write(content)
+
+    def _serve_asset(self, name: str, content_type: str) -> None:
+        """Serve one vendored asset by name.
+
+        Named routes rather than a /static/* prefix that joins whatever the
+        request asked for: this server reaches into the source tree, so the
+        set of files it will hand out is spelled out in the route table and
+        cannot be widened by a crafted path. no-store keeps a rebuilt
+        stylesheet from losing to a cached copy.
+        """
+        path = STATIC_DIR / name
+        if not path.exists():
+            self._json_error(f"{name} not found — run tools/build_dashboard_assets.py", 500)
+            return
+        content = path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(content)))
         self.end_headers()
         self.wfile.write(content)

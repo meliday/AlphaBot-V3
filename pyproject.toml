@@ -21,6 +21,12 @@ dependencies = [
     "websocket-client>=1.8",
 ]
 
+# Build-time only, and only when the dashboard's vendored stylesheet has
+# to be regenerated (tools/build_dashboard_assets.py). Nothing at runtime
+# imports these, and the committed CSS means most checkouts never need them.
+[project.optional-dependencies]
+assets = ["fonttools[woff]>=4.50"]
+
 [project.scripts]
 bot = "alpha_bot.runner:main"
 bot-gui = "alpha_bot.gui:main"
