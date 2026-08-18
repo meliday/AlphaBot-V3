@@ -31,27 +31,25 @@ class MarketStatus:
     next_open: datetime | None = None
 
 
-# Holidays are exchange-local calendar dates. Half-days (Black Friday,
-# day after Thanksgiving on NYSE, KRX year-end) are treated as full
-# closed days here for simplicity — the auto-pilot doesn't need those
-# minutes.
+# Holidays are exchange-local calendar dates. Years not explicitly marked
+# complete below fail closed instead of guessing that an omitted holiday is
+# a trading day.
 _HOLIDAYS: dict[Market, set[date]] = {
     "KR": {
         # 2026
         date(2026, 1, 1),
         date(2026, 2, 16), date(2026, 2, 17), date(2026, 2, 18),  # 설날 연휴
-        date(2026, 3, 1),  # 3·1절
+        date(2026, 3, 2),  # 3·1절 대체공휴일
+        date(2026, 5, 1),  # 근로자의 날 (KRX 휴장)
         date(2026, 5, 5),  # 어린이날
         date(2026, 5, 25), # 부처님오신날
-        date(2026, 6, 6),  # 현충일
-        date(2026, 8, 15), # 광복절
-        date(2026, 9, 24), date(2026, 9, 25), date(2026, 9, 26),  # 추석
-        date(2026, 10, 3), # 개천절
+        date(2026, 6, 3),  # 전국동시지방선거
+        date(2026, 8, 17), # 광복절 대체공휴일
+        date(2026, 9, 24), date(2026, 9, 25),  # 추석
+        date(2026, 10, 5), # 개천절 대체공휴일
         date(2026, 10, 9), # 한글날
         date(2026, 12, 25),
         date(2026, 12, 31), # 연말 휴장
-        # 2027 — fill in as official calendar publishes; safe-but-bare for now
-        date(2027, 1, 1),
     },
     "US": {
         # NYSE 2026
@@ -65,8 +63,31 @@ _HOLIDAYS: dict[Market, set[date]] = {
         date(2026, 9, 7),  # Labor Day
         date(2026, 11, 26),# Thanksgiving
         date(2026, 12, 25),# Christmas
-        # 2027
+        # NYSE 2027 (official published calendar)
         date(2027, 1, 1),
+        date(2027, 1, 18),
+        date(2027, 2, 15),
+        date(2027, 3, 26),
+        date(2027, 5, 31),
+        date(2027, 6, 18),
+        date(2027, 7, 5),
+        date(2027, 9, 6),
+        date(2027, 11, 25),
+        date(2027, 12, 24),
+    },
+}
+
+_COMPLETE_HOLIDAY_YEARS: dict[Market, set[int]] = {
+    "KR": {2026},
+    "US": {2026, 2027},
+}
+
+_EARLY_CLOSES: dict[Market, dict[date, time]] = {
+    "KR": {},
+    "US": {
+        date(2026, 11, 27): time(13, 0),
+        date(2026, 12, 24): time(13, 0),
+        date(2027, 11, 26): time(13, 0),
     },
 }
 
@@ -75,10 +96,11 @@ def _market_zone(market: Market) -> ZoneInfo:
     return _KST if market == "KR" else _ET
 
 
-def _open_window(market: Market) -> tuple[time, time]:
+def _open_window(market: Market, session_date: date | None = None) -> tuple[time, time]:
     if market == "KR":
         return time(9, 0), time(15, 30)
-    return time(9, 30), time(16, 0)
+    close = _EARLY_CLOSES.get(market, {}).get(session_date, time(16, 0))
+    return time(9, 30), close
 
 
 def market_status(
@@ -92,8 +114,14 @@ def market_status(
     tz = _market_zone(market)
     moment = (now or datetime.now(tz)).astimezone(tz)
     today_local = moment.date()
+    if today_local.year not in _COMPLETE_HOLIDAY_YEARS.get(market, set()):
+        return MarketStatus(
+            market,
+            False,
+            f"{today_local.year}년 휴장일 달력 미검증 — 안전 차단",
+        )
     holidays = _HOLIDAYS.get(market, set()) | set(extra_holidays)
-    open_t, close_t = _open_window(market)
+    open_t, close_t = _open_window(market, today_local)
 
     if moment.weekday() >= 5:
         return MarketStatus(
@@ -113,20 +141,25 @@ def market_status(
             market, False, f"장 마감 (현지 {moment.strftime('%H:%M')})",
             next_open=_next_session_open(market, today_local, holidays),
         )
-    return MarketStatus(market, True, f"장중 (현지 {moment.strftime('%H:%M')})")
+    early = " · 조기폐장일" if close_t < time(16, 0) and market == "US" else ""
+    return MarketStatus(
+        market, True, f"장중 (현지 {moment.strftime('%H:%M')}){early}"
+    )
 
 
 def _next_session_open(
     market: Market, after: date, holidays: set[date]
-) -> datetime:
+) -> datetime | None:
     tz = _market_zone(market)
-    open_t, _ = _open_window(market)
     candidate = after + timedelta(days=1)
     for _ in range(14):  # search up to 2 weeks ahead (handles long holiday clusters)
+        if candidate.year not in _COMPLETE_HOLIDAY_YEARS.get(market, set()):
+            return None
         if candidate.weekday() < 5 and candidate not in holidays:
+            open_t, _ = _open_window(market, candidate)
             return datetime.combine(candidate, open_t, tzinfo=tz)
         candidate += timedelta(days=1)
-    return datetime.combine(candidate, open_t, tzinfo=tz)
+    return None
 
 
 def any_market_open(markets: Iterable[Market], *, now: datetime | None = None) -> bool:

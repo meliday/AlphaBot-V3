@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -61,7 +62,11 @@ def _write_env_partial(updates: dict[str, str]) -> None:
     for key, value in updates.items():
         if key not in written:
             output.append(f"{key}={value}")
-    ENV_PATH.write_text("\n".join(output) + "\n", encoding="utf-8")
+    temp_path = ENV_PATH.with_name(ENV_PATH.name + ".tmp")
+    temp_path.write_text("\n".join(output) + "\n", encoding="utf-8")
+    os.chmod(temp_path, 0o600)
+    os.replace(temp_path, ENV_PATH)
+    os.chmod(ENV_PATH, 0o600)
 
 
 # ── Handler functions ────────────────────────────────────────────────
@@ -84,10 +89,21 @@ def handle_save_settings(body: dict[str, Any]) -> dict[str, Any] | tuple[str, in
     allowed = {
         "KIS_MODE", "KIS_APP_KEY", "KIS_APP_SECRET", "KIS_ACCOUNT_NO",
         "KIS_ACCOUNT_PRODUCT", "KIS_HTS_ID", "BOT_BROKER",
+        "TOSS_CLIENT_ID", "TOSS_CLIENT_SECRET", "TOSS_ACCOUNT_SEQ",
+        "TOSS_ENABLE_LIVE_ORDERS", "TOSS_TOKEN_CACHE",
         "BOT_APPROVAL_QUEUE", "OPENAI_API_KEY", "OPENAI_MODEL",
     }
     updates = {k: str(v) for k, v in env.items() if k in allowed}
     updates = {k: v for k, v in updates.items() if "***" not in v}
+    if any(any(char in value for char in ("\n", "\r", "\0")) for value in updates.values()):
+        return ("env values cannot contain newlines or null bytes", 400)
+    if "TOSS_ACCOUNT_SEQ" in updates and updates["TOSS_ACCOUNT_SEQ"]:
+        if not updates["TOSS_ACCOUNT_SEQ"].isdigit() or int(updates["TOSS_ACCOUNT_SEQ"]) <= 0:
+            return ("TOSS_ACCOUNT_SEQ must be a positive integer", 400)
+    if updates.get("TOSS_ENABLE_LIVE_ORDERS", "false").lower() not in {
+        "true", "false", "1", "0", "yes", "no", "on", "off",
+    }:
+        return ("TOSS_ENABLE_LIVE_ORDERS must be true or false", 400)
     _write_env_partial(updates)
     return {"saved": list(updates.keys())}
 
@@ -100,7 +116,7 @@ def handle_auto_start(body: dict[str, Any]) -> dict[str, Any] | tuple[str, int]:
         interval=int(body.get("interval", 300)),
         broker=body.get("broker", "mock"),
         quantity=int(body.get("quantity", 1)),
-        source=body.get("source", "kis"),
+        source=body.get("source", "toss"),
         use_llm=bool(body.get("use_llm", True)),
         cooldown_hours=int(body.get("cooldown_hours", 24)),
         cooldown_enabled=bool(body.get("cooldown_enabled", True)),
@@ -175,7 +191,7 @@ def handle_quotes(params: dict[str, str]) -> list[dict]:
 
 
 def handle_account(params: dict[str, str], serialise: Any) -> dict[str, Any]:
-    broker_name = params.get("broker", "kis")
+    broker_name = params.get("broker", "toss")
     market_param = params.get("market", "ALL").upper()
     broker = make_broker(broker_name)
     markets: list[str] = ["KR", "US"] if market_param == "ALL" else [market_param]

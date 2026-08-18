@@ -10,13 +10,14 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from alpha_bot.broker import KisBroker, MockBroker
+from alpha_bot.broker import KisBroker, MockBroker, TossBroker
 from alpha_bot.broker.base import Broker
 from alpha_bot.data import (
     DataProvider,
     FixtureDataProvider,
     KisPriceDataProvider,
     SyntheticDataProvider,
+    TossPriceDataProvider,
 )
 from alpha_bot.models import (
     AnalysisReport,
@@ -37,11 +38,19 @@ def make_provider(source: str, data_dir: Path) -> DataProvider:
         return SyntheticDataProvider()
     if source == "kis":
         return KisPriceDataProvider(FixtureDataProvider(data_dir))
+    if source == "toss":
+        return TossPriceDataProvider(FixtureDataProvider(data_dir))
     return FixtureDataProvider(data_dir)
 
 
 def make_broker(name: str) -> Broker:
-    return KisBroker() if name == "kis" else MockBroker()
+    if name == "kis":
+        return KisBroker()
+    if name == "toss":
+        return TossBroker()
+    if name == "mock":
+        return MockBroker()
+    raise ValueError(f"Unsupported broker: {name}")
 
 
 # ── One-shot analysis with optional LLM news ─────────────────────────

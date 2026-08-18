@@ -29,6 +29,7 @@ import time
 from typing import Callable
 
 from alpha_bot.approval import ApprovalQueue
+from alpha_bot.approval.queue import order_belongs_to_broker
 from alpha_bot.auto.position_manager import manage_open_positions, remaining_quantity
 from alpha_bot.broker.base import Broker
 from alpha_bot.data import DataProvider
@@ -119,26 +120,36 @@ class StreamPricedProvider:
         return self._base.get_market_context(ticker, market)
 
 
-def held_kr_tickers(queue: ApprovalQueue) -> set[str]:
+def held_kr_tickers(queue: ApprovalQueue, broker: Broker | None = None) -> set[str]:
     """KR tickers with a live remaining position (stream-subscribable)."""
+    return held_tickers_by_market(queue, broker).get("KR", set())
+
+
+def held_tickers_by_market(
+    queue: ApprovalQueue, broker: Broker | None = None
+) -> dict[Market, set[str]]:
+    """Live queue positions grouped by market, scoped to one broker account."""
+
     orders = queue.list_orders()
     by_id = {o.id: o for o in orders}
-    held: set[str] = set()
+    held: dict[Market, set[str]] = {}
     for buy in orders:
-        if buy.request.side != "buy" or buy.request.market != "KR":
+        if buy.request.side != "buy":
             continue
-        if buy.status not in {"filled", "partially_filled"}:
+        if broker is not None and not order_belongs_to_broker(buy, broker):
+            continue
+        if buy.status not in {"filled", "partially_filled", "partially_filled_cancelled"}:
             continue
         if (buy.filled_quantity or 0) <= 0 or buy.avg_fill_price is None:
             continue
         exit_order = by_id.get(buy.exit_order_id or "")
         if exit_order and exit_order.status in {
-            "pending", "submitted", "partially_filled", "filled",
+            "pending", "submitting", "unknown", "submitted", "partially_filled", "filled",
         }:
             continue
         qty, _inflight = remaining_quantity(buy, by_id)
         if qty > 0:
-            held.add(buy.request.ticker)
+            held.setdefault(buy.request.market, set()).add(buy.request.ticker)
     return held
 
 
@@ -165,6 +176,7 @@ class LiveExitMonitor:
         self.provider = StreamPricedProvider(provider, self.prices, candle_ttl=candle_ttl)
         self.say = say
         self._last_generation = -1
+        self._last_evaluation = 0.0
 
     # Stream callback — hand this to KisStreamClient(on_tick=...).
     def on_tick(self, tick: Tick) -> None:
@@ -173,7 +185,7 @@ class LiveExitMonitor:
     def sync_subscriptions(self, stream) -> set[str]:
         """Subscribe held KR tickers / unsubscribe closed ones. Returns the
         current watch set."""
-        watch = held_kr_tickers(self.queue)
+        watch = held_kr_tickers(self.queue, self.broker)
         current = stream.desired()
         for ticker in watch - current:
             stream.subscribe(ticker)
@@ -192,6 +204,23 @@ class LiveExitMonitor:
         if generation == self._last_generation:
             return False
         self._last_generation = generation
+        self._last_evaluation = time.monotonic()
+        manage_open_positions(self.queue, self.broker, self.provider, self.say)
+        return True
+
+    def evaluate_if_due(self, rest_poll_interval: float = 15.0) -> bool:
+        """Evaluate on fresh KR ticks or periodic REST fallback for any market."""
+
+        held = held_tickers_by_market(self.queue, self.broker)
+        if not held or not any(self.market_open(market) for market in held):
+            return False
+        now = time.monotonic()
+        fresh_tick = self.prices.generation != self._last_generation
+        rest_due = (now - self._last_evaluation) >= max(1.0, rest_poll_interval)
+        if not fresh_tick and not rest_due:
+            return False
+        self._last_generation = self.prices.generation
+        self._last_evaluation = now
         manage_open_positions(self.queue, self.broker, self.provider, self.say)
         return True
 

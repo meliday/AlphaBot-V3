@@ -31,16 +31,18 @@ def handle_approve(body: dict[str, str], serialise: Any) -> dict[str, Any]:
 
 
 def handle_sync_orders(body: dict[str, Any], serialise: Any) -> dict[str, Any] | tuple[str, int]:
-    broker_name = str(body.get("broker", "kis"))
+    broker_name = str(body.get("broker", "toss"))
     broker = make_broker(broker_name)
     config = load_config(CONFIG_PATH)
     queue = ApprovalQueue(config.approval_queue)
     try:
+        recovered = queue.recover_unresolved_orders(broker)
         changed = queue.sync_with_broker(broker)
     except Exception as exc:
         return (f"동기화 실패: {exc}", 500)
     return {
         "broker": broker_name,
+        "recovered": [serialise(o) for o in recovered],
         "changed": [serialise(o) for o in changed],
-        "count": len(changed),
+        "count": len(recovered) + len(changed),
     }

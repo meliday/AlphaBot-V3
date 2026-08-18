@@ -19,6 +19,12 @@ from typing import Any
 from alpha_bot.models import Market
 
 
+# Values written by this loader may be refreshed when the dashboard updates
+# .env. Values that were already present in the process environment (or were
+# changed externally afterwards) remain authoritative.
+_DOTENV_MANAGED_VALUES: dict[str, str] = {}
+
+
 @dataclass(frozen=True)
 class AppConfig:
     default_market: Market = "US"
@@ -50,12 +56,29 @@ class AppConfig:
 def load_dotenv(path: Path = Path(".env")) -> None:
     if not path.exists():
         return
+    loaded_keys: set[str] = set()
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
-        os.environ[key.strip()] = value.strip().strip('"').strip("'")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        loaded_keys.add(key)
+        previous_managed = _DOTENV_MANAGED_VALUES.get(key)
+        current = os.environ.get(key)
+        if current is None or current == previous_managed:
+            os.environ[key] = value
+            _DOTENV_MANAGED_VALUES[key] = value
+        else:
+            # Explicit process/service environment wins over a local .env.
+            _DOTENV_MANAGED_VALUES.pop(key, None)
+
+    for key, old_value in list(_DOTENV_MANAGED_VALUES.items()):
+        if key not in loaded_keys:
+            if os.environ.get(key) == old_value:
+                os.environ.pop(key, None)
+            _DOTENV_MANAGED_VALUES.pop(key, None)
 
 
 def load_config(path: Path = Path("config.yaml")) -> AppConfig:

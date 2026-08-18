@@ -13,11 +13,11 @@ from alpha_bot.approval import ApprovalQueue
 from alpha_bot.auto import (
     AutoTradeOptions,
     analyze_ticker,
+    make_broker,
     make_provider,
     run_auto_iteration,
 )
 from alpha_bot.backtest import Backtester
-from alpha_bot.broker import KisBroker, MockBroker
 from alpha_bot.config import load_config, load_watchlist
 from alpha_bot.errors import BotError
 from alpha_bot.models import OrderRequest
@@ -72,18 +72,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     approve = subparsers.add_parser("approve", help="Approve and submit one queued order")
     approve.add_argument("--order-id", required=True)
-    approve.add_argument("--broker", choices=["mock", "kis"])
+    approve.add_argument("--broker", choices=["mock", "kis", "toss"])
     approve.add_argument("--queue")
     approve.set_defaults(func=cmd_approve)
 
     auto = subparsers.add_parser("auto", help="Run in fully automated mode (Auto-pilot)")
     auto.add_argument("--universe", required=True, help="Watchlist file to scan periodically")
     auto.add_argument("--interval", type=int, default=300, help="Scan interval in seconds (default: 300)")
-    auto.add_argument("--broker", choices=["mock", "kis"])
+    auto.add_argument("--broker", choices=["mock", "kis", "toss"])
     auto.add_argument("--quantity", type=int, default=1, help="Quantity to buy per trade")
     auto.add_argument("--data-dir")
     auto.add_argument("--demo", action="store_true")
     auto.add_argument("--kis-data", action="store_true")
+    auto.add_argument("--toss-data", action="store_true")
     auto.add_argument("--language", default="ko")
     auto.add_argument("--cooldown-hours", type=int, default=24, help="Skip a ticker if it was already enqueued within this window")
     auto.add_argument("--no-llm", action="store_true", help="Skip the LLM news assessment step")
@@ -92,15 +93,33 @@ def build_parser() -> argparse.ArgumentParser:
 
     monitor = subparsers.add_parser(
         "monitor",
-        help="Real-time exit monitor — KIS WebSocket ticks drive the standard exit engine (KR positions)",
+        help="Exit monitor — KR streams when available, with KR/US REST fallback",
     )
-    monitor.add_argument("--broker", choices=["mock", "kis"])
+    monitor.add_argument("--broker", choices=["mock", "kis", "toss"])
     monitor.add_argument("--data-dir")
     monitor.add_argument("--demo", action="store_true")
     monitor.add_argument("--kis-data", action="store_true", help="Use KIS REST for the daily candles (ATR/trail math)")
+    monitor.add_argument("--toss-data", action="store_true", help="Use Toss REST for daily candles")
     monitor.add_argument("--eval-interval", type=float, default=2.0, help="Seconds between exit passes when fresh ticks arrived")
     monitor.add_argument("--resub-interval", type=float, default=30.0, help="Seconds between position→subscription syncs")
+    monitor.add_argument("--rest-poll-interval", type=float, default=15.0, help="KR/US REST fallback seconds (default: 15)")
     monitor.set_defaults(func=cmd_monitor)
+
+    watchdog = subparsers.add_parser(
+        "watchdog",
+        help="Alert when the auto-pilot or exit monitor heartbeat becomes stale",
+    )
+    watchdog.add_argument(
+        "--component", action="append", choices=["auto", "monitor"],
+        help="Component to require; repeat for both (default: both)",
+    )
+    watchdog.add_argument("--auto-timeout", type=float, default=420.0)
+    watchdog.add_argument("--monitor-timeout", type=float, default=60.0)
+    watchdog.add_argument("--interval", type=float, default=15.0)
+    watchdog.add_argument("--startup-grace", type=float, default=30.0)
+    watchdog.add_argument("--heartbeat-dir")
+    watchdog.add_argument("--once", action="store_true", help="Check once and exit")
+    watchdog.set_defaults(func=cmd_watchdog)
 
     backtest = subparsers.add_parser(
         "backtest",
@@ -112,6 +131,7 @@ def build_parser() -> argparse.ArgumentParser:
     backtest.add_argument("--data-dir")
     backtest.add_argument("--demo", action="store_true")
     backtest.add_argument("--kis-data", action="store_true", help="Use KIS REST for daily prices; fixtures fill fundamentals/news")
+    backtest.add_argument("--toss-data", action="store_true", help="Use Toss REST for adjusted daily prices")
     backtest.add_argument("--language", default="ko")
     backtest.add_argument(
         "--universe",
@@ -133,6 +153,7 @@ def _add_analysis_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--data-dir")
     parser.add_argument("--demo", action="store_true")
     parser.add_argument("--kis-data", action="store_true", help="Use KIS REST for daily prices; fixtures fill fundamentals/news")
+    parser.add_argument("--toss-data", action="store_true", help="Use Toss REST for adjusted daily prices")
     parser.add_argument("--language", default="ko")
 
 
@@ -222,7 +243,7 @@ def cmd_pending(args: argparse.Namespace) -> int:
 def cmd_approve(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config))
     broker_name = args.broker or config.broker
-    broker = KisBroker() if broker_name == "kis" else MockBroker()
+    broker = make_broker(broker_name)
     queue = ApprovalQueue(Path(args.queue) if args.queue else config.approval_queue)
     order, result = queue.approve(args.order_id, broker)
     logger.info("Order %s approved via %s: %s", order.id, broker_name, result.message)
@@ -232,8 +253,13 @@ def cmd_approve(args: argparse.Namespace) -> int:
 
 def cmd_auto(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config))
+    if args.kis_data and args.toss_data:
+        raise ValueError("Choose only one market-data source: --kis-data or --toss-data.")
     broker_name = args.broker or config.broker
-    source = "demo" if args.demo else "kis" if args.kis_data else "local"
+    source = (
+        "demo" if args.demo else "toss" if args.toss_data
+        else "kis" if args.kis_data else "local"
+    )
     opts = AutoTradeOptions(
         watchlist=Path(args.universe),
         broker_name=broker_name,
@@ -251,13 +277,25 @@ def cmd_auto(args: argparse.Namespace) -> int:
     )
     print(f"📄 Watchlist: {args.universe}")
 
+    from alpha_bot.auto.watchdog import sleep_with_heartbeat, write_heartbeat
+
+    write_heartbeat(
+        "auto", status="starting", detail={"broker": broker_name}
+    )
     try:
         while True:
+            write_heartbeat(
+                "auto", status="scanning", detail={"broker": broker_name}
+            )
             print(f"\n--- 🔄 스캔 시작 {time.strftime('%Y-%m-%d %H:%M:%S')} ---")
             run_auto_iteration(opts, config, log=lambda m: print(m))
+            write_heartbeat(
+                "auto", status="idle", detail={"broker": broker_name}
+            )
             print(f"--- 💤 스캔 완료. {args.interval}s 대기 ---")
-            time.sleep(args.interval)
+            sleep_with_heartbeat(args.interval, "auto")
     except KeyboardInterrupt:
+        write_heartbeat("auto", status="stopped", detail={"broker": broker_name})
         print("\n🛑 Auto-pilot 종료 (사용자 중단)")
         return 0
 
@@ -265,36 +303,105 @@ def cmd_auto(args: argparse.Namespace) -> int:
 def cmd_monitor(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config))
     broker_name = args.broker or config.broker
-    provider = _provider(args, config.data_dir)
+    if (
+        broker_name == "toss"
+        and not args.demo
+        and not args.kis_data
+        and not args.toss_data
+    ):
+        provider = make_provider("toss", config.data_dir)
+    else:
+        provider = _provider(args, config.data_dir)
     queue = ApprovalQueue(config.approval_queue)
-    broker = KisBroker() if broker_name == "kis" else MockBroker()
+    broker = make_broker(broker_name)
 
     from alpha_bot.auto.live_monitor import LiveExitMonitor
-    from alpha_bot.data.stream import KisStreamClient
-
     monitor = LiveExitMonitor(queue, broker, provider, say=print)
-    stream = KisStreamClient(on_tick=monitor.on_tick, on_status=lambda m: print(f"  📡 {m}"))
-    watch = monitor.sync_subscriptions(stream)
+    stream = None
+    watch: set[str] = set()
+    if broker_name == "kis":
+        from alpha_bot.data.stream import KisStreamClient
+        stream = KisStreamClient(
+            on_tick=monitor.on_tick, on_status=lambda m: print(f"  📡 {m}")
+        )
+        watch = monitor.sync_subscriptions(stream)
     print(
-        f"👁️ 실시간 청산 모니터 시작 (broker={broker_name}, "
-        f"감시 {len(watch)}종목: {sorted(watch) if watch else '없음 — 보유 발생 시 자동 구독'})"
+        f"👁️ 청산 모니터 시작 (broker={broker_name}, "
+        f"KR 실시간 {len(watch)}종목, REST 보조 {args.rest_poll_interval:g}초)"
     )
-    stream.start()
+    if stream is not None:
+        stream.start()
     last_resub = 0.0
+    from alpha_bot.auto.watchdog import write_heartbeat
+    write_heartbeat("monitor", broker=broker, status="starting")
     try:
         while True:
             now = time.monotonic()
-            if now - last_resub >= args.resub_interval:
+            if stream is not None and now - last_resub >= args.resub_interval:
                 monitor.sync_subscriptions(stream)
                 last_resub = now
-            if monitor.market_open("KR"):
-                monitor.evaluate_if_fresh()
+            evaluated = monitor.evaluate_if_due(args.rest_poll_interval)
+            write_heartbeat(
+                "monitor", broker=broker, status="running",
+                detail={"evaluated": evaluated},
+            )
             time.sleep(args.eval_interval)
     except KeyboardInterrupt:
+        write_heartbeat("monitor", broker=broker, status="stopped")
         print("\n🛑 모니터 종료 (사용자 중단)")
         return 0
     finally:
-        stream.stop()
+        if stream is not None:
+            stream.stop()
+
+
+def cmd_watchdog(args: argparse.Namespace) -> int:
+    from alpha_bot.auto.watchdog import check_heartbeat
+    from alpha_bot.notify import notify
+
+    components = list(dict.fromkeys(args.component or ["auto", "monitor"]))
+    directory = Path(args.heartbeat_dir) if args.heartbeat_dir else None
+    timeouts = {"auto": args.auto_timeout, "monitor": args.monitor_timeout}
+    if args.interval <= 0 or args.startup_grace < 0:
+        raise ValueError("watchdog interval must be positive and grace non-negative")
+    for component in components:
+        if timeouts[component] <= 0:
+            raise ValueError(f"{component} timeout must be positive")
+
+    print(f"🐕 Watchdog 시작 (감시: {', '.join(components)})")
+    started = time.monotonic()
+    previous: dict[str, bool] = {}
+    while True:
+        unhealthy = False
+        in_grace = time.monotonic() - started < args.startup_grace
+        for component in components:
+            health = check_heartbeat(
+                component, timeouts[component], directory=directory
+            )
+            if not health.healthy and in_grace and health.record is None:
+                continue
+            unhealthy = unhealthy or not health.healthy
+            prior = previous.get(component)
+            if not health.healthy and prior is not False:
+                message = f"🚨 AlphaBot {component} 생존 신호 이상\n{health.reason}"
+                print(message)
+                notify(
+                    message,
+                    dedupe_key=f"watchdog:{component}:unhealthy",
+                    dedupe_ttl=max(int(timeouts[component]), 60),
+                )
+            elif health.healthy and prior is False:
+                message = (
+                    f"✅ AlphaBot {component} 생존 신호 복구 "
+                    f"(지연 {health.age_seconds or 0:.0f}초)"
+                )
+                print(message)
+                notify(message, dedupe_key=f"watchdog:{component}:recovered", dedupe_ttl=60)
+            previous[component] = health.healthy
+
+        if args.once:
+            return 1 if unhealthy else 0
+        time.sleep(args.interval)
 
 
 def cmd_backtest(args: argparse.Namespace) -> int:
@@ -319,6 +426,8 @@ def cmd_backtest(args: argparse.Namespace) -> int:
         f"win_rate={result.win_rate:.1f}% total_return={result.total_return_pct:.1f}% "
         f"max_dd={result.max_drawdown_pct:.1f}% sharpe={result.sharpe_ratio:.2f}"
     )
+    for limitation in result.limitations:
+        print(f"⚠️ 백테스트 한계: {limitation}")
     for trade in result.trades:
         print(
             f"{trade.entry_date}->{trade.exit_date} {trade.outcome} "
@@ -372,6 +481,8 @@ def _portfolio_backtest(args: argparse.Namespace, config, provider) -> int:
             f"max_dd={result.max_drawdown_pct:.2f}% sharpe={result.sharpe_ratio:.2f} "
             f"max_concurrent={result.max_concurrent_positions} skipped={result.skipped_entries}"
         )
+        for limitation in result.limitations:
+            print(f"  ⚠️ 백테스트 한계: {limitation}")
         for t in result.trades:
             print(
                 f"  {t.entry_date}->{t.exit_date} {t.ticker:8s} {t.outcome:18s} "
@@ -382,11 +493,16 @@ def _portfolio_backtest(args: argparse.Namespace, config, provider) -> int:
 
 
 def _provider(args: argparse.Namespace, default_data_dir: Path):
+    if args.kis_data and args.toss_data:
+        raise ValueError("Choose only one market-data source: --kis-data or --toss-data.")
     if args.demo:
         return make_provider("demo", default_data_dir)
     if args.kis_data:
         data_dir = Path(args.data_dir) if args.data_dir else default_data_dir
         return make_provider("kis", data_dir)
+    if args.toss_data:
+        data_dir = Path(args.data_dir) if args.data_dir else default_data_dir
+        return make_provider("toss", data_dir)
     return make_provider("local", Path(args.data_dir) if args.data_dir else default_data_dir)
 
 

@@ -5,11 +5,13 @@ import json
 import logging
 import math
 import random
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Protocol
 
 from alpha_bot.broker.kis import KisRestClient, KisSettings
+from alpha_bot.broker.toss import TossRestClient, TossSettings
 from alpha_bot.errors import DataError
 from alpha_bot.models import Candle, Catalyst, FundamentalsQuarter, Market, MarketContext
 from alpha_bot.utils import infer_us_exchange_code, safe_float
@@ -382,6 +384,117 @@ class KisPriceDataProvider:
                 seen.add(c.date)
                 unique_candles.append(c)
         return unique_candles
+
+
+class TossPriceDataProvider:
+    """Toss adjusted daily-price provider with local non-price fallback."""
+
+    def __init__(
+        self,
+        fallback: DataProvider | None = None,
+        *,
+        settings: TossSettings | None = None,
+        client: TossRestClient | None = None,
+    ):
+        resolved = settings or TossSettings.from_env()
+        self.client = client or TossRestClient(resolved)
+        self.fallback = fallback
+
+    def get_candles(
+        self, ticker: str, market: Market, lookback: int = 260
+    ) -> list[Candle]:
+        all_rows: list[Candle] = []
+        before: str | None = None
+        seen_cursors: set[str] = set()
+        while len({row.date for row in all_rows}) < lookback:
+            unique_count = len({row.date for row in all_rows})
+            # ``before`` is inclusive, so subsequent pages repeat one
+            # boundary candle. Ask for one extra row or a 260-day request can
+            # silently return only 259 unique sessions.
+            requested = lookback - unique_count + (1 if before else 0)
+            params: dict[str, object] = {
+                "symbol": ticker.upper(),
+                "interval": "1d",
+                "count": min(200, max(1, requested)),
+                "adjusted": "true",
+            }
+            if before:
+                params["before"] = before
+            raw = self.client.request(
+                "GET", "/api/v1/candles", params=params, idempotent=True
+            )
+            result = raw.get("result") or {}
+            rows = result.get("candles") or []
+            if not rows:
+                break
+            for row in rows:
+                stamp = str(row.get("timestamp") or "")
+                if not stamp:
+                    continue
+                try:
+                    candle_date = datetime.fromisoformat(
+                        stamp.replace("Z", "+00:00")
+                    ).date()
+                    all_rows.append(
+                        Candle(
+                            date=candle_date,
+                            open=float(row["openPrice"]),
+                            high=float(row["highPrice"]),
+                            low=float(row["lowPrice"]),
+                            close=float(row["closePrice"]),
+                            volume=int(Decimal(str(row["volume"]))),
+                        )
+                    )
+                except (KeyError, ValueError, InvalidOperation) as exc:
+                    logger.warning(
+                        "Skipping invalid Toss candle for %s:%s: %s",
+                        market, ticker, exc,
+                    )
+            next_before = result.get("nextBefore")
+            if not next_before or str(next_before) in seen_cursors:
+                break
+            before = str(next_before)
+            seen_cursors.add(before)
+
+        unique = {row.date: row for row in all_rows}
+        candles = sorted(unique.values(), key=lambda row: row.date)
+        if len(candles) < min(lookback, 220):
+            raise DataError(
+                f"Toss returned only {len(candles)} candles for {market}:{ticker}; "
+                f"need {min(lookback, 220)}."
+            )
+        return candles[-lookback:]
+
+    def get_current_price(self, ticker: str, market: Market) -> float | None:
+        try:
+            raw = self.client.request(
+                "GET",
+                "/api/v1/prices",
+                params={"symbols": ticker.upper()},
+                idempotent=True,
+            )
+            for row in raw.get("result") or []:
+                if str(row.get("symbol") or "").upper() == ticker.upper():
+                    value = float(row.get("lastPrice") or 0)
+                    return value if value > 0 else None
+        except Exception as exc:
+            logger.warning("Toss quote failed for %s:%s: %s", market, ticker, exc)
+        return None
+
+    def get_fundamentals(
+        self, ticker: str, market: Market
+    ) -> list[FundamentalsQuarter]:
+        return self.fallback.get_fundamentals(ticker, market) if self.fallback else []
+
+    def get_catalysts(self, ticker: str, market: Market) -> list[Catalyst]:
+        return self.fallback.get_catalysts(ticker, market) if self.fallback else []
+
+    def get_market_context(self, ticker: str, market: Market) -> MarketContext:
+        return (
+            self.fallback.get_market_context(ticker, market)
+            if self.fallback
+            else MarketContext()
+        )
 
 
 def compound_return(candles: list[Candle], periods: int) -> float | None:

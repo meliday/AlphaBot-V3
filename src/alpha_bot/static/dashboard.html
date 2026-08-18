@@ -257,7 +257,8 @@
         <label class="flex flex-col gap-1">
           <span class="text-subtext px-1 text-xs">데이터 소스</span>
           <select id="aSource" class="input rounded-toss-sm px-3 py-2 font-semibold">
-            <option value="kis" selected>KIS API (실시간)</option>
+            <option value="toss" selected>Toss API (수정주가)</option>
+            <option value="kis">KIS API</option>
             <option value="local">로컬 파일</option>
           </select>
         </label>
@@ -530,7 +531,8 @@
       <label class="flex flex-col gap-1 w-40">
         <span class="text-subtext text-xs px-1">데이터 소스</span>
         <select id="sSource" class="input rounded-toss-sm px-3 py-2 font-semibold">
-          <option value="kis" selected>KIS API</option>
+          <option value="toss" selected>Toss API</option>
+          <option value="kis">KIS API</option>
           <option value="local">로컬 파일</option>
         </select>
       </label>
@@ -776,13 +778,15 @@
             <span class="text-subtext text-xs px-1">브로커</span>
             <select id="autoBroker" class="input rounded-toss-sm px-3 py-2 font-semibold">
               <option value="mock">Mock (실주문 X)</option>
+              <option value="toss">Toss API</option>
               <option value="kis">KIS API</option>
             </select>
           </label>
           <label class="flex flex-col gap-1">
             <span class="text-subtext text-xs px-1">데이터 소스</span>
             <select id="autoSource" class="input rounded-toss-sm px-3 py-2 font-semibold">
-              <option value="kis" selected>KIS API</option>
+              <option value="toss" selected>Toss API</option>
+              <option value="kis">KIS API</option>
               <option value="local">로컬 파일</option>
             </select>
           </label>
@@ -939,10 +943,11 @@
     <div class="flex items-end justify-between">
       <div>
         <h1 class="text-3xl font-extrabold tracking-tight">계좌</h1>
-        <p class="text-subtext mt-2">KIS 브로커 잔고와 보유 포지션을 한눈에 확인합니다.</p>
+        <p class="text-subtext mt-2">Toss·KIS·Mock 잔고와 보유 포지션을 확인합니다.</p>
       </div>
       <div class="flex items-center gap-2">
         <select id="acctBroker" class="input rounded-toss-sm px-3 py-2 text-sm font-semibold">
+          <option value="toss">Toss</option>
           <option value="kis">KIS</option>
           <option value="mock">Mock</option>
         </select>
@@ -975,8 +980,11 @@
     <div class="flex gap-2 flex-wrap">
       <button class="chip bg-blueSoft text-tossblue oFilter active" data-status="all">전체</button>
       <button class="chip bg-dim text-subtext oFilter" data-status="pending">대기</button>
+      <button class="chip bg-dim text-subtext oFilter" data-status="submitting">전송중</button>
+      <button class="chip bg-dim text-subtext oFilter" data-status="unknown">결과불명</button>
       <button class="chip bg-dim text-subtext oFilter" data-status="submitted">제출</button>
       <button class="chip bg-dim text-subtext oFilter" data-status="partially_filled">부분체결</button>
+      <button class="chip bg-dim text-subtext oFilter" data-status="partially_filled_cancelled">부분체결·잔량취소</button>
       <button class="chip bg-dim text-subtext oFilter" data-status="filled">체결완료</button>
       <button class="chip bg-dim text-subtext oFilter" data-status="rejected">거부</button>
       <button class="chip bg-dim text-subtext oFilter" data-status="cancelled">취소</button>
@@ -998,6 +1006,32 @@
     <div class="card space-y-5">
       <h3 class="font-extrabold text-lg">전략 (config.yaml)</h3>
       <div id="cfgGrid" class="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm"></div>
+    </div>
+
+    <div class="card space-y-4">
+      <h3 class="font-extrabold text-lg">Toss Open API 인증</h3>
+      <p class="text-xs text-subtext">Client ID·Secret은 마스킹됩니다. 계좌가 여러 개면 Account Seq를 반드시 지정하세요. 실주문은 기본적으로 차단됩니다.</p>
+      <div class="grid md:grid-cols-2 gap-3">
+        <label class="flex flex-col gap-1 text-sm">
+          <span class="text-subtext text-xs px-1">TOSS_CLIENT_ID</span>
+          <input id="envTOSS_CLIENT_ID" class="input rounded-toss-sm px-3 py-2 font-mono text-sm" />
+        </label>
+        <label class="flex flex-col gap-1 text-sm">
+          <span class="text-subtext text-xs px-1">TOSS_CLIENT_SECRET</span>
+          <input id="envTOSS_CLIENT_SECRET" class="input rounded-toss-sm px-3 py-2 font-mono text-sm" />
+        </label>
+        <label class="flex flex-col gap-1 text-sm">
+          <span class="text-subtext text-xs px-1">TOSS_ACCOUNT_SEQ</span>
+          <input id="envTOSS_ACCOUNT_SEQ" type="number" min="1" placeholder="계좌 1개면 비워둬" class="input rounded-toss-sm px-3 py-2 font-mono text-sm" />
+        </label>
+        <label class="flex flex-col gap-1 text-sm">
+          <span class="text-rise text-xs px-1 font-bold">TOSS_ENABLE_LIVE_ORDERS</span>
+          <select id="envTOSS_ENABLE_LIVE_ORDERS" class="input rounded-toss-sm px-3 py-2 font-semibold">
+            <option value="false">false (주문 차단)</option>
+            <option value="true">true (실주문 허용)</option>
+          </select>
+        </label>
+      </div>
     </div>
 
     <div class="card space-y-4">
@@ -1600,17 +1634,20 @@ function _renderPortfolio() {
 
   // ── 완료 거래 ──
   if (closed.length) {
-    const realizedPnl = closed.reduce((s, t) => s + (t.pnl || 0), 0);
-    const wins = closed.filter(t => (t.return_pct || 0) > 0).length;
-    const avgRet = closed.reduce((s, t) => s + (t.return_pct || 0), 0) / closed.length;
-    $('pfClosedCount').textContent = closed.length + '건';
+    const priced = closed.filter(t => t.pricing_complete !== false && t.pnl != null && t.return_pct != null);
+    const unpriced = closed.length - priced.length;
+    const realizedPnl = priced.reduce((s, t) => s + t.pnl, 0);
+    const wins = priced.filter(t => t.return_pct > 0).length;
+    const avgRet = priced.length ? priced.reduce((s, t) => s + t.return_pct, 0) / priced.length : null;
+    $('pfClosedCount').textContent = closed.length + '건' + (unpriced ? ` · ${unpriced}건 손익 미확인` : '');
     const rCls = realizedPnl >= 0 ? 'text-rise' : 'text-fall';
     $('pfRealizedPnl').className = 'text-2xl font-extrabold ' + rCls;
-    $('pfRealizedPnl').textContent = _fmtMixed(closed.map(t => ({market: t.market})), realizedPnl);
-    $('pfWinRate').textContent = Math.round(wins / closed.length * 100) + '%';
-    $('pfWinRate').className = 'text-2xl font-extrabold ' + (wins / closed.length >= 0.5 ? 'text-rise' : 'text-fall');
-    $('pfAvgReturn').className = 'text-2xl font-extrabold ' + (avgRet >= 0 ? 'text-rise' : 'text-fall');
-    $('pfAvgReturn').textContent = (avgRet >= 0 ? '+' : '') + avgRet.toFixed(2) + '%';
+    $('pfRealizedPnl').textContent = priced.length ? _fmtMixed(priced.map(t => ({market: t.market})), realizedPnl) : '확인 불가';
+    const winRate = priced.length ? wins / priced.length : null;
+    $('pfWinRate').textContent = winRate == null ? '-' : Math.round(winRate * 100) + '%';
+    $('pfWinRate').className = 'text-2xl font-extrabold ' + (winRate == null ? 'text-warn' : winRate >= 0.5 ? 'text-rise' : 'text-fall');
+    $('pfAvgReturn').className = 'text-2xl font-extrabold ' + (avgRet == null ? 'text-warn' : avgRet >= 0 ? 'text-rise' : 'text-fall');
+    $('pfAvgReturn').textContent = avgRet == null ? '-' : (avgRet >= 0 ? '+' : '') + avgRet.toFixed(2) + '%';
     $('pfClosedList').innerHTML = closed.slice().reverse().map(t => _closedRow(t)).join('');
     $('pfClosedWrap').classList.remove('hidden');
   } else {
@@ -1629,8 +1666,10 @@ function _fmtMixed(items, total) {
 }
 
 function _brokerChip(broker) {
-  const cls = broker === 'kis' ? 'bg-tossblue text-white' : 'bg-dim text-subtext';
-  return `<span class="chip text-xs px-2 py-0.5 ${cls}">${broker === 'kis' ? 'KIS' : 'Mock'}</span>`;
+  const live = broker === 'kis' || broker === 'toss';
+  const label = broker === 'toss' ? 'Toss' : broker === 'kis' ? 'KIS' : 'Mock';
+  const cls = live ? 'bg-tossblue text-white' : 'bg-dim text-subtext';
+  return `<span class="chip text-xs px-2 py-0.5 ${cls}">${label}</span>`;
 }
 
 function _openCard(p) {
@@ -1665,6 +1704,7 @@ function _openCard(p) {
 }
 
 function _closedRow(t) {
+  const unpriced = t.pricing_complete === false || t.return_pct == null || t.pnl == null;
   const retCls = (t.return_pct || 0) >= 0 ? 'text-rise' : 'text-fall';
   const retSign = (t.return_pct || 0) >= 0 ? '+' : '';
   const isKR = t.market === 'KR';
@@ -1682,8 +1722,9 @@ function _closedRow(t) {
       <div class="flex items-center gap-4 shrink-0 text-right">
         <div class="hidden sm:block text-xs text-subtext">${fmt(t.entry)} → ${fmt(t.exit)}<br>${t.quantity}주 · ${exitLabel}</div>
         <div>
-          <div class="font-bold ${retCls}">${retSign}${(t.return_pct || 0).toFixed(2)}%</div>
-          <div class="text-xs ${retCls}">${retSign}${fmt(t.pnl)}</div>
+          ${unpriced
+            ? '<div class="font-bold text-warn">체결가 미확인</div><div class="text-xs text-warn">손익 미집계</div>'
+            : `<div class="font-bold ${retCls}">${retSign}${t.return_pct.toFixed(2)}%</div><div class="text-xs ${retCls}">${retSign}${fmt(t.pnl)}</div>`}
         </div>
       </div>
     </div>`;
@@ -1790,7 +1831,7 @@ function loadAutoSettings() {
       $('autoFile').value = cfg.watchlist;
     if (cfg.interval)   $('autoInterval').value = String(cfg.interval);
     if (cfg.broker)     $('autoBroker').value = cfg.broker;
-    if (cfg.source)     $('autoSource').value = cfg.source === 'demo' ? 'kis' : cfg.source;
+    if (cfg.source)     $('autoSource').value = cfg.source === 'demo' ? 'toss' : cfg.source;
     if (cfg.quantity)   $('autoQty').value = String(cfg.quantity);
     if (cfg.cooldown_hours !== undefined) $('autoCooldown').value = String(cfg.cooldown_hours);
     if (cfg.cooldown_enabled !== undefined) $('autoCooldownEnabled').checked = !!cfg.cooldown_enabled;
@@ -1816,7 +1857,7 @@ async function toggleAuto() {
         watchlist:        cfg.watchlist,
         interval:         cfg.interval         || 300,
         broker:           cfg.broker           || 'mock',
-        source:           cfg.source           || 'kis',
+        source:           cfg.source           || 'toss',
         quantity:         cfg.quantity         || 1,
         cooldown_hours:   cfg.cooldown_hours   ?? 24,
         cooldown_enabled: cfg.cooldown_enabled ?? true,
@@ -1974,9 +2015,11 @@ function _mcPositionCard(p) {
   const exitBadge = p.has_active_exit
     ? '<span class="chip bg-warnSoft text-warn text-xs">매도 진행 중</span>'
     : '';
-  const brokerChip = p.broker === 'kis'
-    ? '<span class="chip bg-tossblue text-white text-xs">KIS</span>'
-    : '<span class="chip bg-dim text-subtext text-xs">Mock</span>';
+  const brokerChip = p.broker === 'toss'
+    ? '<span class="chip bg-tossblue text-white text-xs">Toss</span>'
+    : p.broker === 'kis'
+      ? '<span class="chip bg-tossblue text-white text-xs">KIS</span>'
+      : '<span class="chip bg-dim text-subtext text-xs">Mock</span>';
   const ladderHtml = ladder == null ? '' : `
     <div class="mt-3">
       <div class="flex justify-between text-[10px] font-bold uppercase tracking-wider text-subtext mb-1">
@@ -2246,16 +2289,22 @@ function renderOrders(list) {
   box.innerHTML = filtered.map(o => {
     const STATUS_STYLE = {
       pending:          'bg-warnSoft text-warn',
+      submitting:       'bg-blueSoft text-tossblue',
+      unknown:          'bg-riseSoft text-rise',
       submitted:        'bg-blueSoft text-tossblue',
       partially_filled: 'bg-warnSoft text-warn',
+      partially_filled_cancelled: 'bg-warnSoft text-warn',
       filled:           'bg-goodSoft text-good',
       rejected:         'bg-riseSoft text-rise',
       cancelled:        'bg-dim text-subtext',
     };
     const STATUS_LABEL = {
       pending: '대기',
+      submitting: '전송 중',
+      unknown: '결과 불명',
       submitted: '제출됨',
       partially_filled: '부분체결',
+      partially_filled_cancelled: '부분체결·잔량취소',
       filled: '체결완료',
       rejected: '거부',
       cancelled: '취소',
@@ -2318,6 +2367,7 @@ function renderOrders(list) {
           ${canApprove ? `
             <div class="flex flex-col gap-2 shrink-0">
               <button class="btn btn-ghost text-sm" onclick="approveOrder('${o.id}','mock')">Mock 승인</button>
+              <button class="btn btn-danger text-sm" onclick="approveOrder('${o.id}','toss')">Toss 승인</button>
               <button class="btn btn-danger text-sm" onclick="approveOrder('${o.id}','kis')">KIS 승인</button>
             </div>
           ` : ''}
@@ -2328,7 +2378,7 @@ function renderOrders(list) {
 
 async function syncOrders() {
   try {
-    const broker = $('autoBroker') ? $('autoBroker').value : 'kis';
+    const broker = $('autoBroker') ? $('autoBroker').value : 'toss';
     const out = await api('POST', '/api/orders/sync', { broker });
     toast(out.count ? `${out.count}건 갱신됨` : '갱신할 주문 없음', out.count ? 'success' : 'info');
     await loadOrders();
@@ -2338,7 +2388,8 @@ async function syncOrders() {
 }
 
 async function approveOrder(id, broker) {
-  if (broker === 'kis' && !confirm(`${id}를 KIS 브로커로 승인하시겠습니까? (실제 주문)`)) return;
+  if ((broker === 'kis' || broker === 'toss') &&
+      !confirm(`${id}를 ${broker.toUpperCase()} 브로커로 승인하시겠습니까? (실제 주문)`)) return;
   try {
     const out = await api('POST', '/api/orders/approve', { order_id: id, broker });
     toast(`${broker.toUpperCase()} ${out.order.status === 'submitted' ? '제출 완료' : '실패'}`, out.order.status === 'submitted' ? 'success' : 'error');
@@ -2454,6 +2505,12 @@ $('acctBroker').onchange = loadAccount;
 // ──────────────────────────────────────────────────────────
 // SETTINGS
 // ──────────────────────────────────────────────────────────
+const SETTINGS_ENV_KEYS = [
+  'TOSS_CLIENT_ID','TOSS_CLIENT_SECRET','TOSS_ACCOUNT_SEQ','TOSS_ENABLE_LIVE_ORDERS',
+  'KIS_MODE','KIS_APP_KEY','KIS_APP_SECRET','KIS_ACCOUNT_NO','KIS_ACCOUNT_PRODUCT','KIS_HTS_ID',
+  'OPENAI_API_KEY','OPENAI_MODEL'
+];
+
 async function loadSettings() {
   try {
     const data = await api('GET', '/api/settings');
@@ -2478,8 +2535,10 @@ async function loadSettings() {
       </div>
     `).join('');
 
-    ['KIS_MODE','KIS_APP_KEY','KIS_APP_SECRET','KIS_ACCOUNT_NO','KIS_ACCOUNT_PRODUCT','KIS_HTS_ID','OPENAI_API_KEY','OPENAI_MODEL']
-      .forEach(k => { const el = $('env' + k); if (el) el.value = env[k] || ''; });
+    SETTINGS_ENV_KEYS.forEach(k => {
+      const el = $('env' + k);
+      if (el) el.value = env[k] || (k === 'TOSS_ENABLE_LIVE_ORDERS' ? 'false' : '');
+    });
   } catch (e) {
     toast('설정 불러오기 실패: ' + e.message, 'error');
   }
@@ -2487,8 +2546,14 @@ async function loadSettings() {
 
 $('saveSettings').onclick = async () => {
   const env = {};
-  ['KIS_MODE','KIS_APP_KEY','KIS_APP_SECRET','KIS_ACCOUNT_NO','KIS_ACCOUNT_PRODUCT','KIS_HTS_ID','OPENAI_API_KEY','OPENAI_MODEL']
-    .forEach(k => { const v = ($('env' + k) || {}).value; if (v != null) env[k] = v; });
+  SETTINGS_ENV_KEYS.forEach(k => {
+    const v = ($('env' + k) || {}).value;
+    if (v != null) env[k] = v;
+  });
+  if (String(env.TOSS_ENABLE_LIVE_ORDERS).toLowerCase() === 'true' &&
+      !confirm('Toss 실주문 차단을 해제합니다. 읽기 전용 검증과 최소 수량 수동 테스트를 마쳤습니까?')) {
+    return;
+  }
   try {
     const out = await api('POST', '/api/settings', { env });
     toast(`저장 완료 (${out.saved.length}개)`, 'success');
@@ -2668,8 +2733,8 @@ function renderLogRecords(records, total) {
             <span class="text-mute font-mono">${r.order_id || ''}</span>
           </div>`;
       } else if (ev === 'trade') {
-        const sMap = { submitted:'제출됨', filled:'체결', rejected:'거부', cancelled:'취소' };
-        const sCls = { submitted:'text-tossblue', filled:'text-good', rejected:'text-rise', cancelled:'text-subtext' };
+        const sMap = { submitting:'전송 중', unknown:'결과 불명', submitted:'제출됨', partially_filled:'부분체결', partially_filled_cancelled:'부분체결·잔량취소', filled:'체결', rejected:'거부', cancelled:'취소' };
+        const sCls = { submitting:'text-tossblue', unknown:'text-rise', submitted:'text-tossblue', partially_filled:'text-warn', partially_filled_cancelled:'text-warn', filled:'text-good', rejected:'text-rise', cancelled:'text-subtext' };
         body = `
           <div class="flex flex-wrap items-center gap-2 mt-1 text-xs">
             <span class="font-bold">${r.market}:${r.ticker}</span>

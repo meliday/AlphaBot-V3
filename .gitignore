@@ -4,6 +4,10 @@
 !.env.example
 # KIS 인증 토큰 (자동 발급·갱신됨)
 .kis_token_*.json
+# Toss OAuth 토큰 (자동 발급·갱신됨)
+.toss_token_*.json
+.toss_token_*.json.tmp
+.toss_token_*.json.lock
 
 # ── 개인 설정 파일 ────────────────────────────────────────────────────
 # 브로커·API 설정 포함. config.example.yaml을 복사해 사용
@@ -13,8 +17,15 @@ watchlist.yaml
 
 # ── 런타임 상태 파일 (재생성 가능) ───────────────────────────────────
 pending_orders.json
+pending_orders.json.tmp
+pending_orders.json.lock
 mock_orders.json
+mock_orders.json.tmp
 mock_state.json
+mock_state.json.tmp
+news_cache.json
+KILL_SWITCH
+runtime/heartbeats/
 
 # ── 로그 ─────────────────────────────────────────────────────────────
 logs/

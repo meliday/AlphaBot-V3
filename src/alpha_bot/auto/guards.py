@@ -94,7 +94,7 @@ def realized_pnl_today(queue: ApprovalQueue, market: Market) -> float:
     for sell in orders:
         if sell.request.side != "sell" or sell.request.market != market:
             continue
-        if sell.status != "filled":
+        if sell.status not in {"filled", "partially_filled_cancelled"}:
             continue
         if sell.avg_fill_price is None or (sell.filled_quantity or 0) <= 0:
             continue
@@ -105,6 +105,25 @@ def realized_pnl_today(queue: ApprovalQueue, market: Market) -> float:
             continue
         pnl += (sell.avg_fill_price - buy.avg_fill_price) * sell.filled_quantity
     return pnl
+
+
+def unpriced_external_closes_today(
+    queue: ApprovalQueue, market: Market
+) -> list[OrderCandidate]:
+    """External closes whose execution price is unknown on the local day."""
+
+    today = date.today()
+    return [
+        order
+        for order in queue.list_orders()
+        if order.request.side == "sell"
+        and order.request.market == market
+        and order.status in {"filled", "partially_filled_cancelled"}
+        and order.broker_order_id == "EXTERNAL"
+        and (order.filled_quantity or 0) > 0
+        and order.avg_fill_price is None
+        and _fill_date(order) == today
+    ]
 
 
 def daily_loss_exceeded(
@@ -120,6 +139,13 @@ def daily_loss_exceeded(
     """
     if limit_pct <= 0:
         return False, ""
+    unpriced = unpriced_external_closes_today(queue, market)
+    if unpriced:
+        quantity = sum(order.filled_quantity for order in unpriced)
+        return True, (
+            f"당일 외부청산 {len(unpriced)}건({quantity}주)의 체결가가 없어 "
+            "실현손익을 확인할 수 없음 — 신규 진입 안전 차단"
+        )
     pnl = realized_pnl_today(queue, market)
     if pnl >= 0:
         return False, ""

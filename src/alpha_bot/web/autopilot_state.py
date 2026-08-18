@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from alpha_bot.auto import AutoTradeOptions, run_auto_iteration
+from alpha_bot.auto.watchdog import write_heartbeat
 from alpha_bot.config import load_config
 
 logger = logging.getLogger(__name__)
@@ -132,22 +133,45 @@ class AutoPilotState:
             f"🚀 자동매매 봇 시작 (브로커: {broker_name}, 감시주기: {interval}초, "
             f"LLM: {use_llm}, 자동 사이징: {auto_size})"
         )
+        write_heartbeat(
+            "auto", status="starting", detail={"broker": broker_name, "source": "web"}
+        )
 
         while self.active:
             try:
+                write_heartbeat(
+                    "auto", status="scanning",
+                    detail={"broker": broker_name, "source": "web"},
+                )
                 self.log(f"🔄 [{watchlist}] 관심종목 스캔 시작...")
                 run_auto_iteration(opts, config, log=self.log)
 
                 if self.active:
+                    write_heartbeat(
+                        "auto", status="idle",
+                        detail={"broker": broker_name, "source": "web"},
+                    )
                     self.log(f"💤 스캔 완료. {interval}초 대기 중...")
-                    for _ in range(interval):
+                    for elapsed in range(interval):
                         if not self.active:
                             break
                         time.sleep(1)
+                        if (elapsed + 1) % 30 == 0:
+                            write_heartbeat(
+                                "auto", status="idle",
+                                detail={"broker": broker_name, "source": "web"},
+                            )
             except Exception as exc:
+                write_heartbeat(
+                    "auto", status="failed",
+                    detail={"broker": broker_name, "source": "web", "error": str(exc)[:200]},
+                )
                 self.log(f"🛑 루프 오류 발생: {exc}")
                 time.sleep(5)
 
+        write_heartbeat(
+            "auto", status="stopped", detail={"broker": broker_name, "source": "web"}
+        )
         self.log("🛑 자동매매 봇이 중지되었습니다.")
 
 

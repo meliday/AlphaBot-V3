@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 from alpha_bot.models import Candle, Catalyst, FundamentalsQuarter, Market, MarketContext
@@ -12,6 +12,18 @@ from alpha_bot.strategy.analyzer import StrategyAnalyzer
 from alpha_bot.strategy.indicators import latest_atr
 
 logger = logging.getLogger(__name__)
+
+# 2026 default model: KR sell taxes 0.20% (KOSPI 0.05% transaction tax +
+# 0.15% rural special tax; KOSDAQ transaction tax 0.20%) plus an assumed
+# 0.015% commission on each leg. US uses 0.01% per leg. Callers can override.
+DEFAULT_ROUND_TRIP_COST_PCT: dict[Market, float] = {"KR": 0.23, "US": 0.02}
+BACKTEST_LIMITATIONS = [
+    "LLM 뉴스 판정과 강제청산 신호는 과거 시점으로 재생하지 않음",
+]
+
+
+def round_trip_cost_pct(market: Market, override: float | None = None) -> float:
+    return DEFAULT_ROUND_TRIP_COST_PCT[market] if override is None else override
 
 
 def _period_visible_by(period: str, asof: date, reporting_lag_days: int = 60) -> bool:
@@ -129,6 +141,7 @@ class BacktestResult:
     commission_pct: float = 0.0
     slippage_pct: float = 0.0
     risk_free_rate: float = 0.0  # annual %, e.g. 4.5 for US, 3.0 for KR
+    limitations: list[str] = field(default_factory=lambda: list(BACKTEST_LIMITATIONS))
 
     @property
     def total_return_pct(self) -> float:
@@ -232,7 +245,7 @@ class Backtester:
         self,
         analyzer: StrategyAnalyzer | None = None,
         max_hold_days: int = 30,
-        commission_pct: float = 0.10,
+        commission_pct: float | None = None,
         slippage_pct: float = 0.05,
         risk_free_rate: float = 0.0,  # annual %, e.g. 4.5 for US, 3.0 for KR
         split_exits: bool = True,
@@ -240,7 +253,7 @@ class Backtester:
         self.analyzer = analyzer or StrategyAnalyzer()
         self.max_hold_days = max_hold_days
         # Round-trip cost expressed as percentages of trade value.
-        self.commission_pct = commission_pct  # e.g. 0.10 → 0.1 %
+        self.commission_pct = commission_pct
         self.slippage_pct = slippage_pct      # e.g. 0.05 → 0.05 %
         self.risk_free_rate = risk_free_rate
         self.split_exits = split_exits
@@ -255,6 +268,7 @@ class Backtester:
         context: MarketContext,
     ) -> BacktestResult:
         trades: list[BacktestTrade] = []
+        commission_pct = round_trip_cost_pct(market, self.commission_pct)
         # Apply half the round-trip slippage to each leg (symmetric model).
         slip_per_leg = (self.slippage_pct / 2) / 100
         index = min(220, max(20, len(candles) // 4))
@@ -296,7 +310,7 @@ class Backtester:
             # deducted once per round trip (slippage already applied per leg).
             exit_price = sum(w * price * (1 - slip_per_leg) for w, price in legs)
             raw_return = (exit_price / entry - 1) * 100
-            net_return = raw_return - self.commission_pct
+            net_return = raw_return - commission_pct
 
             trades.append(
                 BacktestTrade(
@@ -314,7 +328,7 @@ class Backtester:
 
         result = BacktestResult(
             ticker.upper(), market, trades,
-            commission_pct=self.commission_pct,
+            commission_pct=commission_pct,
             slippage_pct=self.slippage_pct,
             risk_free_rate=self.risk_free_rate,
         )
@@ -385,7 +399,7 @@ class Backtester:
             "rf=%.2f%%, split_exits=%s)",
             market, ticker, len(result.trades), result.win_rate,
             result.total_return_pct, result.max_drawdown_pct, result.sharpe_ratio,
-            self.commission_pct, self.slippage_pct, self.risk_free_rate,
+            result.commission_pct, self.slippage_pct, self.risk_free_rate,
             self.split_exits,
         )
         return result

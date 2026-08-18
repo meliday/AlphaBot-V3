@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from alpha_bot.approval import ApprovalQueue
-from alpha_bot.auto.position_manager import remaining_quantity
+from alpha_bot.auto.position_manager import _has_completed_scale_out, remaining_quantity
 from alpha_bot.config import load_config
 from alpha_bot.data.quotes import fetch_quotes
 
@@ -28,12 +28,11 @@ def handle_portfolio(serialise: Any) -> dict[str, Any]:
     for o in orders:
         if o.request.side != "buy":
             continue
-        if o.status not in ("filled", "partially_filled"):
+        if o.status not in ("filled", "partially_filled", "partially_filled_cancelled"):
             continue
-        exit_o = by_id.get(o.exit_order_id or "")
-        if exit_o and exit_o.status == "filled":
-            continue  # position is closed
-        qty = o.filled_quantity or o.request.quantity
+        qty, inflight = remaining_quantity(o, by_id)
+        if qty <= 0 and not inflight:
+            continue
         avg = o.avg_fill_price
         if not avg:
             continue
@@ -64,23 +63,41 @@ def handle_portfolio(serialise: Any) -> dict[str, Any]:
             "pnl_pct": pnl_pct,
         })
 
-    # ── Closed trades (filled buy + filled exit) ──
+    # ── Closed trades (all linked sell fills, including scale-outs) ──
     closed_trades = []
     for buy in orders:
         if buy.request.side != "buy":
             continue
         if (buy.filled_quantity or 0) <= 0 or not buy.avg_fill_price:
             continue
-        exit_o = by_id.get(buy.exit_order_id or "")
-        if not exit_o or exit_o.status != "filled":
+        remaining, inflight = remaining_quantity(buy, by_id)
+        if remaining > 0 or inflight:
+            continue
+        sell_ids = [*buy.partial_exit_ids]
+        if buy.exit_order_id:
+            sell_ids.append(buy.exit_order_id)
+        sells = [by_id[sell_id] for sell_id in dict.fromkeys(sell_ids) if sell_id in by_id]
+        if not sells:
             continue
         entry = buy.avg_fill_price
-        exit_price = exit_o.avg_fill_price or exit_o.request.limit_price
-        if not exit_price:
-            continue
+        priced_qty = sum(
+            sell.filled_quantity
+            for sell in sells
+            if sell.avg_fill_price is not None and sell.filled_quantity > 0
+        )
+        proceeds = sum(
+            sell.avg_fill_price * sell.filled_quantity
+            for sell in sells
+            if sell.avg_fill_price is not None and sell.filled_quantity > 0
+        )
         qty = buy.filled_quantity
-        ret_pct = (exit_price / entry - 1) * 100
-        pnl = (exit_price - entry) * qty
+        pricing_complete = priced_qty >= qty
+        exit_price = proceeds / priced_qty if pricing_complete and priced_qty else None
+        ret_pct = (exit_price / entry - 1) * 100 if exit_price is not None else None
+        pnl = (exit_price - entry) * qty if exit_price is not None else None
+        last_sell = max(
+            sells, key=lambda sell: sell.submitted_at or sell.created_at
+        )
         closed_trades.append({
             "ticker": buy.request.ticker,
             "market": buy.request.market,
@@ -90,8 +107,10 @@ def handle_portfolio(serialise: Any) -> dict[str, Any]:
             "quantity": qty,
             "pnl": pnl,
             "return_pct": ret_pct,
+            "pricing_complete": pricing_complete,
+            "unpriced_quantity": max(qty - priced_qty, 0),
             "entry_date": buy.submitted_at or buy.created_at,
-            "exit_date": exit_o.submitted_at or exit_o.created_at,
+            "exit_date": last_sell.submitted_at or last_sell.created_at,
             "exit_reason": buy.exit_reason or "",
         })
 
@@ -122,17 +141,15 @@ def handle_bot_holdings(params: dict[str, str]) -> dict[str, Any]:
     for o in orders:
         if o.request.side != "buy":
             continue
-        if o.status not in ("filled", "partially_filled"):
+        if o.status not in ("filled", "partially_filled", "partially_filled_cancelled"):
             continue
         if (o.filled_quantity or 0) <= 0:
             continue
-        exit_o = by_id.get(o.exit_order_id or "")
-        if exit_o and exit_o.status == "filled":
-            continue
         # Net out target-1 scale-outs so the UI shows what is actually held.
         qty_held, partial_inflight = remaining_quantity(o, by_id)
-        if qty_held <= 0:
+        if qty_held <= 0 and not partial_inflight:
             continue
+        exit_o = by_id.get(o.exit_order_id or "")
         held.append({
             "ticker": o.request.ticker,
             "market": o.request.market,
@@ -143,12 +160,14 @@ def handle_bot_holdings(params: dict[str, str]) -> dict[str, Any]:
             "target1": o.target1,
             "target2": o.target2,
             "trail_stop": o.trail_stop,
-            "t1_taken": bool(o.partial_exit_ids),
+            "t1_taken": _has_completed_scale_out(o, by_id),
             "order_id": o.id,
             "broker": o.broker,
             "submitted_at": o.submitted_at or o.created_at,
             "has_active_exit": bool(
-                (exit_o and exit_o.status in {"pending", "submitted", "partially_filled"})
+                (exit_o and exit_o.status in {
+                    "pending", "submitting", "unknown", "submitted", "partially_filled",
+                })
                 or partial_inflight
             ),
         })

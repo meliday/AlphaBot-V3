@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -286,6 +287,20 @@ class KisBroker:
     def __init__(self, settings: KisSettings | None = None, client: KisRestClient | None = None):
         self.settings = settings or KisSettings.from_env()
         self.client = client or KisRestClient(self.settings)
+
+    @property
+    def account_id(self) -> str:
+        raw = f"{self.settings.account_no}|{self.settings.account_product}"
+        return f"kis-account:{hashlib.sha256(raw.encode()).hexdigest()[:16]}"
+
+    @property
+    def instance_id(self) -> str:
+        app_fingerprint = hashlib.sha256(self.settings.app_key.encode()).hexdigest()[:12]
+        return f"kis:{self.settings.mode}:{self.account_id}:{app_fingerprint}"
+
+    @property
+    def mode(self) -> str:
+        return self.settings.mode
 
     def place_order(self, order: OrderRequest) -> OrderResult:
         if order.quantity <= 0:

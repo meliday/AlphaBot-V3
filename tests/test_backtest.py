@@ -1,7 +1,7 @@
 import unittest
 from datetime import date, timedelta
 
-from alpha_bot.backtest import Backtester
+from alpha_bot.backtest import Backtester, round_trip_cost_pct
 from alpha_bot.data import SyntheticDataProvider
 from alpha_bot.models import (
     AnalysisReport,
@@ -15,6 +15,11 @@ from alpha_bot.models import (
 
 
 class BacktestTests(unittest.TestCase):
+    def test_2026_default_costs_are_market_specific(self):
+        self.assertEqual(round_trip_cost_pct("KR"), 0.23)
+        self.assertEqual(round_trip_cost_pct("US"), 0.02)
+        self.assertEqual(round_trip_cost_pct("KR", 0.0), 0.0)
+
     def test_backtest_is_reproducible(self):
         provider = SyntheticDataProvider()
         candles = provider.get_candles("NVDA", "US", 320)

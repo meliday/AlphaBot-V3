@@ -1,7 +1,7 @@
 # AlphaBot — CANSLIM + VCP Automated Trading Bot
 
-A semi-automated momentum trading bot for Korean (KIS) and US equity markets.  
-Combines CANSLIM fundamentals, VCP (Volatility Contraction Pattern) technical analysis, and LLM-powered news assessment to generate trade signals, then executes orders through the KIS REST API.
+A semi-automated momentum trading bot for Korean and US equity markets.
+Combines CANSLIM fundamentals, VCP (Volatility Contraction Pattern) technical analysis, and LLM-powered news assessment, with Toss Open API as the primary broker path and KIS retained as an optional legacy adapter.
 
 ---
 
@@ -14,7 +14,8 @@ Combines CANSLIM fundamentals, VCP (Volatility Contraction Pattern) technical an
 | **ETF Proxy Fundamentals** | Leveraged ETFs (SOXL, TQQQ, etc.) derive fundamentals from top-holdings weighted average |
 | **Auto Position Sizing** | Account balance × `risk_per_trade_pct` ÷ ATR-based stop distance |
 | **Mock Simulator** | Paper-trade with a JSON-backed ledger — buy/sell/inject positions without real orders |
-| **KIS REST API** | Full support for KR domestic and US overseas markets (paper and live modes) |
+| **Toss Open API** | KR/US prices, accounts, holdings, direct orders, fill lookup, and conditional-order primitives; live orders are feature-gated off by default |
+| **KIS REST API** | Optional legacy adapter for KR/US markets (paper and live modes) |
 | **Web Dashboard** | Mission control UI on port 8501 — Auto-Pilot, Mock Sim, Portfolio, Account tabs |
 | **Backtester** | Gap-aware exits, symmetric slippage, commission model, Sharpe ratio and MDD |
 | **Structured Audit Logs** | JSONL format (`logs/activity_*.jsonl`, `logs/llm_*.jsonl`) |
@@ -28,7 +29,7 @@ Combines CANSLIM fundamentals, VCP (Volatility Contraction Pattern) technical an
 ```mermaid
 graph TD
     subgraph "Data Layer"
-        A[KIS Price API] --> D[DataProvider]
+        A[Toss / KIS Price API] --> D[DataProvider]
         B[yfinance / Naver] --> D
         C[Local files data/] --> D
     end
@@ -45,7 +46,8 @@ graph TD
         H -->|Manual approval| I{Broker}
         H -->|Auto-Pilot| I
         I --> J[MockBroker\nmock_orders.json]
-        I --> K[KISBroker\nKIS REST API]
+        I --> K[TossBroker\nToss Open API]
+        I --> N[KISBroker\nKIS REST API]
     end
 
     subgraph "Monitoring"
@@ -54,6 +56,7 @@ graph TD
         L --> M[Web Dashboard\n:8501]
         J --> M
         K --> M
+        N --> M
     end
 ```
 
@@ -84,8 +87,9 @@ flowchart TD
     MAN --> BROKER[Broker order]
 
     BROKER --> JJ[MockBroker]
-    BROKER --> KK[KISBroker]
-    JJ & KK --> FILL[Fill confirmation]
+    BROKER --> KK[TossBroker]
+    BROKER --> KL[KISBroker]
+    JJ & KK & KL --> FILL[Fill confirmation]
     FILL --> MONITOR[Position monitoring\nstop-loss / target]
 ```
 
@@ -136,7 +140,7 @@ graph LR
 ### Requirements
 
 - Python 3.11 – 3.13
-- KIS Open API account (domestic + overseas stock API access required)
+- Toss Open API account with an allowed source IP (recommended), or KIS Open API for the legacy path
 - OpenAI API key (optional — falls back to neutral news assessment if absent)
 
 ### Setup
@@ -150,20 +154,13 @@ python3 -m pip install -e .
 cp config.example.yaml config.yaml
 cp watchlist.example.yaml watchlist.yaml
 
-# 3. Create .env file with your API keys
-cat > .env << 'EOF'
-KIS_APP_KEY=your_app_key
-KIS_APP_SECRET=your_app_secret
-KIS_ACCOUNT_NO=12345678-01
-KIS_MODE=paper
-
-OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-4o-mini
-EOF
+# 3. Create .env and keep Toss live ordering disabled initially
+cp .env.example .env
+# Fill TOSS_CLIENT_ID / TOSS_CLIENT_SECRET in .env
 ```
 
 > [!CAUTION]
-> Never commit `.env` or `config.yaml` to version control. Exposed KIS API keys pose a direct risk to your brokerage account.
+> Never commit `.env` or `config.yaml`. Keep `TOSS_ENABLE_LIVE_ORDERS=false` through read-only verification; the supplied Toss guide does not document a sandbox.
 
 ---
 
@@ -171,7 +168,7 @@ EOF
 
 ```bash
 # ── Single-ticker analysis ──────────────────────────────────────
-bot analyze --ticker NVDA --market US             # KIS live data
+bot analyze --ticker NVDA --market US --toss-data # Toss adjusted daily prices
 bot analyze --ticker NVDA --market US --demo      # Synthetic demo data
 bot analyze --ticker 005930 --market KR --language ko
 bot analyze --ticker SOXL --market US --no-llm    # Skip LLM news step
@@ -185,11 +182,18 @@ bot scan --universe watchlist.yaml
 # ── Order management ────────────────────────────────────────────
 bot pending                                       # List queued orders
 bot approve --order-id <ORDER_ID> --broker mock   # Approve via mock
+bot approve --order-id <ORDER_ID> --broker toss   # Toss (requires live-order gate)
 bot approve --order-id <ORDER_ID> --broker kis    # Approve via KIS (live)
 
 # ── Auto-pilot (fully automated loop) ──────────────────────────
 bot auto --universe watchlist.yaml --broker mock --interval 300
+bot auto --universe watchlist.yaml --broker toss --toss-data --auto-size --no-llm
 bot auto --universe watchlist.yaml --broker kis --auto-size --no-llm
+
+# ── Exit monitor + independent liveness watchdog ───────────────
+bot monitor --broker toss --toss-data
+# Run this in a separate service/terminal; Telegram credentials are optional.
+bot watchdog --component auto --component monitor
 
 # ── Backtesting ─────────────────────────────────────────────────
 bot backtest --ticker NVDA --market US --demo
@@ -214,7 +218,7 @@ python3 -m alpha_bot.web
 | **Analysis** | Run a detailed single-ticker analysis |
 | **Auto-Pilot** | Mission control — status dots, countdown timer, KPI cards, bot-held positions |
 | **Mock Sim** | Manual buy/sell, position injection, cash setting, ledger reset |
-| **Account** | KIS live account balances and positions |
+| **Account** | Toss, KIS, or Mock balances and positions |
 
 ### Auto-Pilot Usage
 
@@ -237,7 +241,7 @@ python3 -m alpha_bot.web
 
 ## Data File Formats
 
-To use local fixture data instead of live KIS feeds:
+To use local fixture data instead of live broker feeds:
 
 ```
 data/
@@ -278,7 +282,7 @@ data/
 
 ```yaml
 default_market: US          # US | KR
-broker: mock                # mock | kis
+broker: mock                # mock | toss | kis
 data_dir: data
 approval_queue: pending_orders.json
 max_positions: 5            # Max concurrent held positions
@@ -309,6 +313,7 @@ src/alpha_bot/
 │   ├── analysis.py      One-shot analysis + provider/broker factories
 │   ├── orchestrator.py  Watchlist scan loop, cooldown, regime gate
 │   ├── position_manager.py  Stop/target monitoring, reconciliation, force-exit
+│   ├── watchdog.py      Atomic heartbeats + out-of-process stale-process alerts
 │   └── sizing.py        ATR-based position sizing from account balance
 ├── web/                 Web dashboard (port 8501, stdlib http.server)
 │   ├── server.py        DashboardHandler routing + entry point
@@ -322,7 +327,7 @@ src/alpha_bot/
 │   ├── analyzer.py      StrategyAnalyzer — CANSLIM + VCP scoring engine
 │   └── indicators.py    Pure functions: SMA, RSI, ATR, Bollinger, VCP detection
 ├── data/
-│   ├── providers.py     DataProvider protocol + Fixture/Synthetic/KIS implementations
+│   ├── providers.py     DataProvider protocol + Fixture/Synthetic/Toss/KIS implementations
 │   ├── fundamentals.py  Fundamental data loader + ETF proxy aggregation
 │   ├── scraper.py       News scraper (yfinance for US, Naver for KR)
 │   └── quotes.py        Real-time quote fetcher for portfolio display
@@ -331,7 +336,8 @@ src/alpha_bot/
 ├── broker/
 │   ├── base.py          Broker protocol (structural typing)
 │   ├── mock.py          MockBroker — JSON ledger-based simulator
-│   └── kis.py           KISBroker — KIS REST API adapter (KR + US)
+│   ├── toss.py          TossBroker — Toss Open API adapter (KR + US)
+│   └── kis.py           KISBroker — legacy KIS REST adapter (KR + US)
 ├── approval/
 │   └── queue.py         ApprovalQueue — pending_orders.json lifecycle manager
 ├── report/
@@ -369,8 +375,11 @@ bot analyze --ticker NVDA --market US --demo --no-llm
 
 ## Safety Guidelines
 
-- **Always start with `KIS_MODE=paper`** — validate thoroughly before switching to live trading
-- Live orders are **never submitted implicitly** — `approve --broker kis` must be explicitly called
+- **Toss:** start with `TOSS_ENABLE_LIVE_ORDERS=false`; verify read-only account, holdings, prices and account selection first
+- The supplied Toss specification does not expose a sandbox, so any tiny live acceptance order requires separate operator approval
+- Run `bot monitor` independently from `bot auto`, then run `bot watchdog` in a third service/process. The watchdog alerts on stale heartbeats but deliberately does not liquidate positions automatically
+- Configure `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` to receive watchdog and risk alerts; heartbeat files are private local runtime state
+- **KIS:** start with `KIS_MODE=paper` before its live mode
 - Before running Auto-Pilot, double-check `max_positions` and `risk_per_trade_pct` in your config
 - **Never commit** `.env` or `config.yaml` to a public repository
 - The bot includes multiple safety gates: market hours check, regime filter, cooldown, cash pre-flight, and position limits

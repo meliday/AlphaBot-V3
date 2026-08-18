@@ -17,6 +17,7 @@ from dataclasses import replace as _replace
 from typing import Callable
 
 from alpha_bot.approval import ApprovalQueue
+from alpha_bot.approval.queue import order_belongs_to_broker
 from alpha_bot.broker.base import Broker
 from alpha_bot.data import DataProvider
 from alpha_bot.market_hours import market_status
@@ -36,8 +37,8 @@ logger = logging.getLogger(__name__)
 #   working  — accepted but not fully done (may still fill or change)
 #   active   — working ∪ filled: an exit in any of these states means the
 #              position must not receive another sell.
-_WORKING_STATUSES = {"pending", "submitted", "partially_filled"}
-_ACTIVE_STATUSES = _WORKING_STATUSES | {"filled"}
+_WORKING_STATUSES = {"pending", "submitting", "unknown", "submitted", "partially_filled"}
+_ACTIVE_STATUSES = _WORKING_STATUSES | {"partially_filled_cancelled", "filled"}
 _OPEN_STATUSES = _ACTIVE_STATUSES  # buys: pending intent through held
 
 
@@ -54,19 +55,40 @@ def remaining_quantity(
     """
     remaining = buy.filled_quantity or 0
     inflight = False
-    for pid in buy.partial_exit_ids:
-        partial = by_id.get(pid)
-        if partial is None:
-            continue
-        if partial.status == "filled":
-            remaining -= partial.filled_quantity or partial.request.quantity
-        elif partial.status in _WORKING_STATUSES:
+
+    def apply_sell(sell: OrderCandidate | None) -> None:
+        nonlocal remaining, inflight
+        if sell is None:
+            return
+        if sell.status == "filled":
+            remaining -= sell.filled_quantity or sell.request.quantity
+        elif sell.status == "partially_filled_cancelled":
+            remaining -= sell.filled_quantity or 0
+        elif sell.status in _WORKING_STATUSES:
             inflight = True
-            remaining -= partial.filled_quantity or 0
+            remaining -= sell.filled_quantity or 0
+
+    for pid in buy.partial_exit_ids:
+        apply_sell(by_id.get(pid))
+    apply_sell(by_id.get(buy.exit_order_id or ""))
     return max(remaining, 0), inflight
 
 
-def count_open_positions(queue: ApprovalQueue) -> int:
+def _has_completed_scale_out(
+    buy: OrderCandidate, by_id: dict[str, OrderCandidate]
+) -> bool:
+    for partial_id in buy.partial_exit_ids:
+        partial = by_id.get(partial_id)
+        if partial is None:
+            continue
+        if partial.filled_quantity > 0:
+            return True
+        if partial.status == "filled" and partial.request.quantity > 0:
+            return True
+    return False
+
+
+def count_open_positions(queue: ApprovalQueue, broker: Broker | None = None) -> int:
     """Pending intent + still-working + filled (and not yet fully exited)
     count toward the max_positions cap. Cancelled/rejected and fully-exited
     buys do not."""
@@ -77,11 +99,21 @@ def count_open_positions(queue: ApprovalQueue) -> int:
     for order in orders:
         if order.request.side != "buy":
             continue
+        if broker is not None:
+            # Unbound pending intents are conservatively counted because they
+            # may still be approved into this account. Broker-active legacy
+            # rows without a scope are handled separately and never traded.
+            if order.status != "pending" and not order_belongs_to_broker(order, broker):
+                continue
+            if order.status == "pending" and order.broker_instance_id \
+                    and not order_belongs_to_broker(order, broker):
+                continue
         if order.status not in _OPEN_STATUSES:
             continue
-        exit_order = by_id.get(order.exit_order_id or "")
-        if exit_order and exit_order.status == "filled":
-            continue  # Already exited.
+        if order.status in {"filled", "partially_filled", "partially_filled_cancelled"}:
+            remaining, inflight = remaining_quantity(order, by_id)
+            if remaining <= 0 and not inflight:
+                continue
         key = (order.request.market, order.request.ticker)
         if key in seen:
             continue
@@ -125,7 +157,12 @@ def should_force_exit(report: AnalysisReport) -> tuple[bool, str]:
     return False, ""
 
 
-def find_held_buy(queue: ApprovalQueue, market: Market, ticker: str) -> OrderCandidate | None:
+def find_held_buy(
+    queue: ApprovalQueue,
+    market: Market,
+    ticker: str,
+    broker: Broker | None = None,
+) -> OrderCandidate | None:
     """Return any active buy order for the ticker — filled, partially filled,
     or still in-flight (submitted/pending). This prevents the auto-pilot from
     opening a second position while the first order is still working."""
@@ -134,19 +171,20 @@ def find_held_buy(queue: ApprovalQueue, market: Market, ticker: str) -> OrderCan
     for buy in orders:
         if buy.request.side != "buy":
             continue
+        if broker is not None and not order_belongs_to_broker(buy, broker):
+            continue
         if buy.request.market != market or buy.request.ticker != ticker:
             continue
         # In-flight buy (not yet confirmed by broker): treat as held to block re-entry.
-        if buy.status in {"pending", "submitted"}:
+        if buy.status in {"pending", "submitting", "unknown", "submitted"}:
             return buy
-        if buy.status not in {"filled", "partially_filled"}:
+        if buy.status not in {"filled", "partially_filled", "partially_filled_cancelled"}:
             continue
         if (buy.filled_quantity or 0) <= 0:
             continue
-        exit_order = by_id.get(buy.exit_order_id or "")
-        if exit_order and exit_order.status in _ACTIVE_STATUSES:
-            continue
-        return buy
+        remaining, inflight = remaining_quantity(buy, by_id)
+        if remaining > 0 or inflight:
+            return buy
     return None
 
 
@@ -182,6 +220,7 @@ def trigger_forced_exit(
                 limit_price=None,
                 reason=f"{reason_label}: {detail}",
             ),
+            broker=broker,
             stop_loss=buy.stop_loss,
             target1=buy.target1,
             target2=buy.target2,
@@ -237,34 +276,42 @@ def reconcile_queue_with_broker(
     for o in orders:
         if o.request.side != "buy":
             continue
-        if o.status not in {"filled", "partially_filled"}:
+        if not order_belongs_to_broker(o, broker):
+            continue
+        if o.status not in {"filled", "partially_filled", "partially_filled_cancelled"}:
             continue
         if (o.filled_quantity or 0) <= 0:
             continue
-        exit_o = by_id.get(o.exit_order_id or "")
-        if exit_o and exit_o.status in _ACTIVE_STATUSES:
-            continue  # Already in flight or closed.
+        remaining, inflight = remaining_quantity(o, by_id)
+        if inflight or remaining <= 0:
+            continue
         holdings.setdefault((o.request.market, o.request.ticker), []).append(o)
 
     if not holdings:
         return []
 
     broker_qty: dict[tuple[str, str], int] = {}
+    successful_markets: set[str] = set()
     for market in {key[0] for key in holdings}:
         try:
             positions = broker.get_positions(market)  # type: ignore[arg-type]
             for p in positions:
                 broker_qty[(market, p.ticker)] = p.quantity
+            successful_markets.add(market)
         except Exception as exc:
             logger.warning("Reconcile: positions query failed for %s: %s", market, exc)
 
     reconciled: list[OrderCandidate] = []
     for (market, ticker), buy_list in holdings.items():
+        if market not in successful_markets:
+            continue  # Unknown snapshot is never equivalent to zero holdings.
         if broker_qty.get((market, ticker), 0) > 0:
             continue  # Broker still holds; nothing to reconcile.
         for buy in buy_list:
             try:
-                queue.mark_externally_closed(buy.id, broker_name=broker.name)
+                queue.mark_externally_closed(
+                    buy.id, broker_name=broker.name, broker=broker
+                )
                 reconciled.append(buy)
             except Exception as exc:
                 logger.warning("Failed to mark %s externally closed: %s", buy.id, exc)
@@ -285,7 +332,11 @@ class _ExitDecision:
 
 
 def _evaluate_exit(
-    buy: OrderCandidate, current: float, qty_held: int
+    buy: OrderCandidate,
+    current: float,
+    qty_held: int,
+    *,
+    scaled_out: bool | None = None,
 ) -> _ExitDecision | None:
     """Map (position state, current price) → exit action, or None to hold.
 
@@ -294,7 +345,9 @@ def _evaluate_exit(
     target-2. Pure decision logic — no I/O — so the ladder is testable
     without a queue or broker.
     """
-    if buy.partial_exit_ids:
+    if scaled_out is None:
+        scaled_out = bool(buy.partial_exit_ids)
+    if scaled_out:
         effective_stop = buy.trail_stop if buy.trail_stop is not None else buy.stop_loss
         if effective_stop is not None and current <= effective_stop:
             return _ExitDecision("trail_stop", "market", None, False)
@@ -371,6 +424,7 @@ def _submit_exit(
                 limit_price=decision.limit_price,
                 reason=reason,
             ),
+            broker=broker,
             stop_loss=buy.stop_loss,
             target1=buy.target1,
             target2=buy.target2,
@@ -442,23 +496,28 @@ def manage_open_positions(
     # this map so we never queue a sell for a ticker the broker doesn't actually
     # hold (would result in a rejection and stale "submitted" entries).
     broker_pos_cache: dict[str, dict[str, int]] = {}
+    broker_pos_failed: set[str] = set()
 
     def _broker_qty(market: str, ticker: str) -> int | None:
         """Return broker-side quantity, or None if positions query failed."""
+        if market in broker_pos_failed:
+            return None
         if market not in broker_pos_cache:
             try:
                 positions = broker.get_positions(market)  # type: ignore[arg-type]
                 broker_pos_cache[market] = {p.ticker: p.quantity for p in positions}
             except Exception as exc:
                 logger.warning("Position snapshot failed for %s: %s", market, exc)
-                broker_pos_cache[market] = {}
+                broker_pos_failed.add(market)
                 return None
         return broker_pos_cache[market].get(ticker, 0)
 
     for buy in orders:
         if buy.request.side != "buy":
             continue
-        if buy.status not in {"filled", "partially_filled"}:
+        if not order_belongs_to_broker(buy, broker):
+            continue
+        if buy.status not in {"filled", "partially_filled", "partially_filled_cancelled"}:
             continue
         if (buy.filled_quantity or 0) <= 0:
             continue
@@ -466,13 +525,8 @@ def manage_open_positions(
             # No confirmed fill price — skip to avoid acting on ghost positions.
             continue
 
-        # Skip if there's already an in-flight or completed final sell.
-        active_exit = by_id.get(buy.exit_order_id or "")
-        if active_exit and active_exit.status in _ACTIVE_STATUSES:
-            continue
-
-        # Net out scale-outs; defer while one is still working so we never
-        # double-sell the same shares.
+        # Net out all confirmed sells, including a terminal partial final
+        # exit; defer only while a sell is genuinely still working.
         qty_held, inflight = remaining_quantity(buy, by_id)
         if inflight:
             continue
@@ -511,10 +565,13 @@ def manage_open_positions(
             live_price_cache[key] = live
         current = live_price_cache[key] or candles[-1].close
 
-        decision = _evaluate_exit(buy, current, qty_held)
+        scaled_out = _has_completed_scale_out(buy, by_id)
+        decision = _evaluate_exit(
+            buy, current, qty_held, scaled_out=scaled_out
+        )
         if decision is None:
             # Runner with no exit hit: keep tightening the trail.
-            if buy.partial_exit_ids:
+            if scaled_out:
                 _ratchet_trail(queue, buy, by_id, candles, current, say)
             continue
 
@@ -527,7 +584,9 @@ def manage_open_positions(
         actual_qty = _broker_qty(market, ticker)
         if actual_qty == 0:
             try:
-                queue.mark_externally_closed(buy.id, broker_name=broker.name)
+                queue.mark_externally_closed(
+                    buy.id, broker_name=broker.name, broker=broker
+                )
                 say(
                     f"  🔄 {market}:{ticker} 외부 매도 감지 (브로커 보유 0) "
                     f"— 청산 트리거 무시"

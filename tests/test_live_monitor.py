@@ -14,6 +14,7 @@ from alpha_bot.auto.live_monitor import (
     StreamPricedProvider,
     TickPriceCache,
     held_kr_tickers,
+    held_tickers_by_market,
 )
 from alpha_bot.broker import MockBroker
 from alpha_bot.data.stream import Tick
@@ -82,6 +83,20 @@ class LiveExitMonitorTests(unittest.TestCase):
             sell = next(o for o in orders if o.id == buy.exit_order_id)
             self.assertEqual(sell.request.order_type, "market")
             self.assertEqual(sell.request.quantity, 10)
+
+    def test_us_position_runs_on_rest_fallback_without_kr_market_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            queue, broker = make_filled_buy(tmp, qty=10)
+            monitor = LiveExitMonitor(queue, broker, StubProvider(100.0), say=lambda m: None)
+            self.assertEqual(held_tickers_by_market(queue, broker), {"US": {"NVDA"}})
+            with patch.object(
+                monitor, "market_open", side_effect=lambda market: market == "US"
+            ), patch(
+                "alpha_bot.auto.position_manager.market_status", return_value=_OPEN
+            ), patch(
+                "alpha_bot.auto.position_manager.notify", lambda *a, **k: False
+            ):
+                self.assertTrue(monitor.evaluate_if_due(rest_poll_interval=15))
 
 
 class SubscriptionSyncTests(unittest.TestCase):

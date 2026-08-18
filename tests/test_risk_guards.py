@@ -15,6 +15,7 @@ from alpha_bot.auto.guards import (
     daily_loss_exceeded,
     kill_switch_active,
     realized_pnl_today,
+    unpriced_external_closes_today,
 )
 from alpha_bot.auto.sizing import compute_position_size
 from alpha_bot.broker import MockBroker
@@ -106,6 +107,25 @@ class DailyLossTests(unittest.TestCase):
             tripped, _ = daily_loss_exceeded(queue, broker, "US", limit_pct=0.5)
             self.assertFalse(tripped)
 
+    def test_unpriced_external_close_blocks_new_entries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            queue = ApprovalQueue(Path(tmp) / "pending.json")
+            broker = MockBroker(Path(tmp) / "ledger.json", Path(tmp) / "state.json")
+            buy = queue.enqueue(
+                OrderRequest("NVDA", "US", "buy", 10, "limit", 100.0)
+            )
+            queue.approve(buy.id, broker)
+            queue.sync_with_broker(broker)
+            queue.mark_externally_closed(buy.id, broker=broker)
+
+            self.assertEqual(len(unpriced_external_closes_today(queue, "US")), 1)
+            tripped, detail = daily_loss_exceeded(
+                queue, broker, "US", limit_pct=1.0
+            )
+            self.assertTrue(tripped)
+            self.assertIn("체결가", detail)
+            self.assertIn("안전 차단", detail)
+
 
 class PositionCapTests(unittest.TestCase):
     def test_cap_shrinks_oversized_position(self):
@@ -164,11 +184,28 @@ class StaleOrderTests(unittest.TestCase):
             row = next(o for o in queue.list_orders() if o.id == oid)
             self.assertEqual(row.status, "submitted")
 
-    def test_partially_filled_order_is_left_alone(self):
+    def test_partially_filled_buy_cancels_only_remainder_in_local_state(self):
         with tempfile.TemporaryDirectory() as tmp:
             queue, broker, oid = self._submitted_order(tmp, "2026-07-08T00:00:00+00:00")
             row = next(o for o in queue.list_orders() if o.id == oid)
-            queue.update(replace(row, filled_quantity=2))
+            queue.update(replace(row, status="partially_filled", filled_quantity=2))
+            cancelled = queue.cancel_stale_orders(broker, 60)
+            self.assertEqual([o.id for o in cancelled], [oid])
+            updated = next(o for o in queue.list_orders() if o.id == oid)
+            self.assertEqual(updated.status, "partially_filled_cancelled")
+            self.assertEqual(updated.filled_quantity, 2)
+
+    def test_stale_sell_is_never_cancelled_by_entry_freshness_policy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            queue = ApprovalQueue(Path(tmp) / "pending.json")
+            broker = MockBroker(Path(tmp) / "ledger.json", Path(tmp) / "state.json")
+            candidate = queue.enqueue(
+                OrderRequest("NVDA", "US", "sell", 1, "limit", 100.0),
+                broker=broker,
+            )
+            queue.approve(candidate.id, broker)
+            row = next(o for o in queue.list_orders() if o.id == candidate.id)
+            queue.update(replace(row, submitted_at="2026-07-08T00:00:00+00:00"))
             self.assertEqual(queue.cancel_stale_orders(broker, 60), [])
 
     def test_disabled_at_zero_minutes(self):

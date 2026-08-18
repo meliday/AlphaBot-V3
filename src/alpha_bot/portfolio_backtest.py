@@ -29,7 +29,13 @@ import logging
 import math
 from dataclasses import dataclass, field
 
-from alpha_bot.backtest import ladder_step, visible_catalysts, visible_fundamentals
+from alpha_bot.backtest import (
+    BACKTEST_LIMITATIONS,
+    ladder_step,
+    round_trip_cost_pct,
+    visible_catalysts,
+    visible_fundamentals,
+)
 from alpha_bot.models import Candle, Catalyst, FundamentalsQuarter, Market, MarketContext
 from alpha_bot.strategy.analyzer import StrategyAnalyzer
 from alpha_bot.strategy.indicators import latest_atr
@@ -71,6 +77,8 @@ class PortfolioBacktestResult:
     equity_curve: list[tuple[str, float]]  # (iso date, marked-to-market equity)
     max_concurrent_positions: int
     skipped_entries: int  # signals that could not fill (slots/cash/size=0)
+    commission_pct: float = 0.0
+    limitations: list[str] = field(default_factory=lambda: list(BACKTEST_LIMITATIONS))
 
     @property
     def total_return_pct(self) -> float:
@@ -153,7 +161,7 @@ class PortfolioBacktester:
         risk_per_trade_pct: float = 1.0,
         max_position_pct: float = 20.0,
         max_hold_days: int = 30,
-        commission_pct: float = 0.10,
+        commission_pct: float | None = None,
         slippage_pct: float = 0.05,
     ):
         self.analyzer = analyzer or StrategyAnalyzer()
@@ -175,6 +183,7 @@ class PortfolioBacktester:
                 "Run one portfolio per market."
             )
         market = universe[0].market
+        commission_pct = round_trip_cost_pct(market, self.commission_pct)
         slip = (self.slippage_pct / 2) / 100  # per leg
 
         series = {s.ticker: s for s in universe}
@@ -202,7 +211,7 @@ class PortfolioBacktester:
             nonlocal cash
             entry_value = pos.entry_price * pos.initial_shares
             proceeds = sum(qty * price for qty, price in pos.legs)
-            commission = entry_value * (self.commission_pct / 100)
+            commission = entry_value * (commission_pct / 100)
             cash -= commission
             pnl = proceeds - entry_value - commission
             avg_exit = proceeds / pos.initial_shares
@@ -400,6 +409,7 @@ class PortfolioBacktester:
             equity_curve=equity_curve,
             max_concurrent_positions=max_concurrent,
             skipped_entries=skipped_entries,
+            commission_pct=commission_pct,
         )
         logger.info(
             "Portfolio backtest %s — %d tickers, %d trades, return=%.2f%%, "

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from pathlib import Path
@@ -38,6 +39,19 @@ class MockBroker:
     ):
         self.ledger_path = ledger_path
         self.state_path = state_path
+
+    @property
+    def instance_id(self) -> str:
+        raw = f"{self.ledger_path.resolve()}|{self.state_path.resolve()}"
+        return f"mock:{hashlib.sha256(raw.encode()).hexdigest()[:16]}"
+
+    @property
+    def account_id(self) -> str:
+        return self.instance_id
+
+    @property
+    def mode(self) -> str:
+        return "simulation"
 
     # ── Order placement ─────────────────────────────────────────────
 

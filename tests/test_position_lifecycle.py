@@ -5,12 +5,17 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
 from alpha_bot.approval import ApprovalQueue
 from alpha_bot.auto.position_manager import (
+    _evaluate_exit,
+    _has_completed_scale_out,
+    count_open_positions,
+    find_held_buy,
     manage_open_positions,
     remaining_quantity,
     should_force_exit,
@@ -182,6 +187,97 @@ class ScaleOutTests(unittest.TestCase):
             run_manager(queue, broker, price=100.0, provider=LiveProvider(100.0))
             buy = next(o for o in queue.list_orders() if o.request.side == "buy")
             self.assertEqual(buy.exit_reason, "stop_loss")
+
+
+class TerminalPartialExitTests(unittest.TestCase):
+    @staticmethod
+    def _linked_sell(queue, broker, buy, *, status, filled, partial):
+        sell = queue.enqueue(
+            OrderRequest("NVDA", "US", "sell", buy.filled_quantity, "market"),
+            broker=broker,
+        )
+        sell = replace(
+            sell,
+            status=status,
+            filled_quantity=filled,
+            avg_fill_price=105.0 if filled else None,
+        )
+        queue.update(sell)
+        if partial:
+            buy = replace(buy, partial_exit_ids=[*buy.partial_exit_ids, sell.id])
+        else:
+            buy = replace(buy, exit_order_id=sell.id)
+        queue.update(buy)
+        return buy, sell
+
+    def test_terminal_partial_final_exit_keeps_remaining_position_open(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            queue, broker = make_filled_buy(tmp, qty=10)
+            buy = next(o for o in queue.list_orders() if o.request.side == "buy")
+            buy, _ = self._linked_sell(
+                queue, broker, buy,
+                status="partially_filled_cancelled", filled=4, partial=False,
+            )
+            by_id = {o.id: o for o in queue.list_orders()}
+
+            self.assertEqual(remaining_quantity(buy, by_id), (6, False))
+            self.assertEqual(count_open_positions(queue, broker), 1)
+            self.assertEqual(find_held_buy(queue, "US", "NVDA", broker).id, buy.id)
+
+    def test_filled_final_exit_closes_position(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            queue, broker = make_filled_buy(tmp, qty=10)
+            buy = next(o for o in queue.list_orders() if o.request.side == "buy")
+            buy, _ = self._linked_sell(
+                queue, broker, buy, status="filled", filled=10, partial=False,
+            )
+            by_id = {o.id: o for o in queue.list_orders()}
+
+            self.assertEqual(remaining_quantity(buy, by_id), (0, False))
+            self.assertEqual(count_open_positions(queue, broker), 0)
+            self.assertIsNone(find_held_buy(queue, "US", "NVDA", broker))
+
+    def test_zero_fill_rejected_scale_out_does_not_advance_runner_phase(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            queue, broker = make_filled_buy(tmp, qty=10)
+            buy = next(o for o in queue.list_orders() if o.request.side == "buy")
+            buy, _ = self._linked_sell(
+                queue, broker, buy, status="rejected", filled=0, partial=True,
+            )
+            by_id = {o.id: o for o in queue.list_orders()}
+
+            self.assertFalse(_has_completed_scale_out(buy, by_id))
+            decision = _evaluate_exit(
+                buy, 111.0, 10,
+                scaled_out=_has_completed_scale_out(buy, by_id),
+            )
+            self.assertEqual(decision.trigger, "target1")
+            self.assertTrue(decision.scale_out)
+
+    def test_terminal_partial_scale_out_counts_only_confirmed_fill(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            queue, broker = make_filled_buy(tmp, qty=10)
+            buy = next(o for o in queue.list_orders() if o.request.side == "buy")
+            buy, _ = self._linked_sell(
+                queue, broker, buy,
+                status="partially_filled_cancelled", filled=4, partial=True,
+            )
+            by_id = {o.id: o for o in queue.list_orders()}
+
+            self.assertEqual(remaining_quantity(buy, by_id), (6, False))
+            self.assertTrue(_has_completed_scale_out(buy, by_id))
+
+    def test_external_close_synthesizes_only_confirmed_remainder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            queue, broker = make_filled_buy(tmp, qty=10)
+            buy = next(o for o in queue.list_orders() if o.request.side == "buy")
+            buy, _ = self._linked_sell(
+                queue, broker, buy, status="filled", filled=4, partial=True,
+            )
+
+            synthetic = queue.mark_externally_closed(buy.id, broker=broker)
+            self.assertEqual(synthetic.request.quantity, 6)
+            self.assertEqual(synthetic.filled_quantity, 6)
 
 
 class ForceExitConfirmationTests(unittest.TestCase):

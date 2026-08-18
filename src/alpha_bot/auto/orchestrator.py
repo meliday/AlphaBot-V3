@@ -16,8 +16,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
+from zoneinfo import ZoneInfo
 
 from alpha_bot.approval import ApprovalQueue
+from alpha_bot.approval.queue import order_belongs_to_broker
 from alpha_bot.auto.analysis import analyze_ticker, make_broker, make_provider
 from alpha_bot.auto.guards import daily_loss_exceeded, kill_switch_active
 from alpha_bot.auto.position_manager import (
@@ -71,6 +73,11 @@ def run_auto_iteration(
     broker = make_broker(opts.broker_name)
 
     try:
+        for order in queue.recover_unresolved_orders(broker):
+            say(
+                f"  🔁 {order.request.market}:{order.request.ticker} "
+                f"{order.id} 전송 결과 복구 → {order.status}"
+            )
         changed = queue.sync_with_broker(broker)
         for order in changed:
             say(
@@ -79,6 +86,9 @@ def run_auto_iteration(
             )
     except Exception as exc:
         logger.warning("Order sync failed: %s", exc)
+
+    legacy = queue.unscoped_broker_orders(broker)
+    unresolved = queue.unresolved_orders(broker)
 
     # ── Cancel limit orders that sat unfilled past the freshness window. ──
     # A stale limit buy can fill hours later at a price whose setup no
@@ -125,7 +135,29 @@ def run_auto_iteration(
         )
         return
 
-    open_count = count_open_positions(queue)
+    if legacy:
+        say(
+            f"🛑 계좌 미귀속 기존 주문 {len(legacy)}건 — 신규 매수 중단. "
+            "현재 계좌 확인 후 명시적 귀속이 필요합니다."
+        )
+        notify(
+            f"🛑 AlphaBot 계좌 미귀속 주문 {len(legacy)}건 발견\n"
+            "자동 계좌 추정을 하지 않았으며 신규 매수를 중단합니다.",
+            dedupe_key=f"legacy_scope:{broker.name}",
+        )
+        return
+    if unresolved:
+        say(
+            f"🛑 결과 불명 주문 {len(unresolved)}건 — 중복주문 방지를 위해 신규 매수 중단"
+        )
+        notify(
+            f"🛑 AlphaBot 결과 불명 주문 {len(unresolved)}건\n"
+            "브로커 대사 전까지 신규 매수를 중단합니다.",
+            dedupe_key=f"unknown_orders:{broker.name}",
+        )
+        return
+
+    open_count = count_open_positions(queue, broker)
     if open_count >= config.max_positions:
         say(
             f"⚠️ 보유/대기 주문 {open_count}건이 max_positions({config.max_positions}) 도달, "
@@ -158,6 +190,13 @@ def run_auto_iteration(
         if not market_cache[market]:
             continue
 
+        rejected, rejection_reason = _rejection_retry_block(
+            queue, ticker, market, broker
+        )
+        if rejected:
+            say(f"[{market}:{ticker}] 🚫 주문 재시도 차단 — {rejection_reason}")
+            continue
+
         # ── CANSLIM "M" filter: block new entries in a bearish broad index ──
         if market not in regime_cache:
             regime = get_regime(market)
@@ -184,7 +223,9 @@ def run_auto_iteration(
             continue
 
         try:
-            if opts.cooldown_enabled and _on_cooldown(queue, ticker, market, cooldown):
+            if opts.cooldown_enabled and _on_cooldown(
+                queue, ticker, market, cooldown, broker
+            ):
                 say(f"[{market}:{ticker}] ⏳ 쿨다운({opts.cooldown_hours}h) 중, 스킵")
                 continue
 
@@ -207,7 +248,7 @@ def run_auto_iteration(
                 f"rr={report.trade_plan.rr_ratio:.2f}{news_msg}"
             )
 
-            held = find_held_buy(queue, market, ticker)
+            held = find_held_buy(queue, market, ticker, broker)
             if held is not None:
                 force_exit, detail = should_force_exit(report)
                 if force_exit:
@@ -279,6 +320,7 @@ def run_auto_iteration(
                     limit_price=entry_price,
                     reason=report.reason,
                 ),
+                broker=broker,
                 stop_loss=report.trade_plan.stop_loss,
                 target1=report.trade_plan.target1,
                 target2=report.trade_plan.target2,
@@ -329,16 +371,34 @@ def run_auto_iteration(
 
 
 def _on_cooldown(
-    queue: ApprovalQueue, ticker: str, market: str, cooldown: timedelta
+    queue: ApprovalQueue,
+    ticker: str,
+    market: str,
+    cooldown: timedelta,
+    broker=None,
 ) -> bool:
     if cooldown.total_seconds() <= 0:
         return False
     cutoff = datetime.now(timezone.utc) - cooldown
     for order in queue.list_orders():
+        if broker is not None and order.broker_instance_id:
+            from alpha_bot.approval.queue import order_belongs_to_broker
+            if not order_belongs_to_broker(order, broker):
+                continue
         if (
             order.request.ticker == ticker
             and order.request.market == market
             and order.request.side == "buy"
+            and order.status
+            in {
+                "pending",
+                "submitting",
+                "unknown",
+                "submitted",
+                "partially_filled",
+                "partially_filled_cancelled",
+                "filled",
+            }
         ):
             try:
                 created = datetime.fromisoformat(
@@ -351,3 +411,61 @@ def _on_cooldown(
             if created >= cutoff:
                 return True
     return False
+
+
+def _rejection_retry_block(
+    queue: ApprovalQueue,
+    ticker: str,
+    market: str,
+    broker,
+    *,
+    now: datetime | None = None,
+) -> tuple[bool, str]:
+    """Apply session block for permanent rejects and backoff transient ones."""
+
+    clock = now or datetime.now(timezone.utc)
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=timezone.utc)
+    market_zone = ZoneInfo("Asia/Seoul" if market == "KR" else "America/New_York")
+    local_day = clock.astimezone(market_zone).date()
+    rejected: list[tuple[datetime, object]] = []
+    for order in queue.list_orders():
+        if order.status != "rejected" or order.request.side != "buy":
+            continue
+        if order.request.ticker != ticker or order.request.market != market:
+            continue
+        if not order_belongs_to_broker(order, broker):
+            continue
+        stamp = order.submitted_at or order.created_at
+        try:
+            when = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            continue
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        if when.astimezone(market_zone).date() == local_day:
+            rejected.append((when, order))
+    if not rejected:
+        return False, ""
+
+    rejected.sort(key=lambda row: row[0])
+    last_time, last = rejected[-1]
+    retryable = getattr(last, "rejection_retryable", None)
+    code = getattr(last, "rejection_code", None) or "broker-rejected"
+    if retryable is not True:
+        return True, f"영구 오류 {code}; 현재 거래일 종목 차단"
+
+    attempts = sum(
+        1
+        for _, order in rejected
+        if getattr(order, "rejection_retryable", None) is True
+    )
+    delay_minutes = min(5 * (2 ** max(0, attempts - 1)), 360)
+    retry_at = last_time + timedelta(minutes=delay_minutes)
+    if clock < retry_at:
+        remaining = max(1, int((retry_at - clock).total_seconds() // 60) + 1)
+        return (
+            True,
+            f"일시 오류 {code}; {attempts}회 실패, 약 {remaining}분 후 재시도",
+        )
+    return False, ""

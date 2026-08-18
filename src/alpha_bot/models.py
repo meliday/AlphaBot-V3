@@ -10,8 +10,10 @@ Side = Literal["buy", "sell"]
 OrderStatus = Literal[
     "pending",
     "submitting",
+    "unknown",
     "submitted",
     "partially_filled",
+    "partially_filled_cancelled",
     "filled",
     "rejected",
     "cancelled",
@@ -240,6 +242,7 @@ class OrderRequest:
     order_type: Literal["limit", "market"] = "limit"
     limit_price: float | None = None
     reason: str = ""
+    client_order_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -264,7 +267,12 @@ class OrderCandidate:
     submitted_at: str | None = None
     broker_order_id: str | None = None
     broker_message: str | None = None
-    broker: str = "mock"
+    rejection_code: str | None = None
+    rejection_retryable: bool | None = None
+    broker: str = "unbound"
+    broker_instance_id: str | None = None
+    broker_account_id: str | None = None
+    broker_mode: str | None = None
     filled_quantity: int = 0
     avg_fill_price: float | None = None
     last_synced_at: str | None = None
@@ -289,6 +297,7 @@ class OrderCandidate:
                 "order_type": self.request.order_type,
                 "limit_price": self.request.limit_price,
                 "reason": self.request.reason,
+                "client_order_id": self.request.client_order_id,
             },
             "status": self.status,
             "created_at": self.created_at,
@@ -299,7 +308,12 @@ class OrderCandidate:
             "submitted_at": self.submitted_at,
             "broker_order_id": self.broker_order_id,
             "broker_message": self.broker_message,
+            "rejection_code": self.rejection_code,
+            "rejection_retryable": self.rejection_retryable,
             "broker": self.broker,
+            "broker_instance_id": self.broker_instance_id,
+            "broker_account_id": self.broker_account_id,
+            "broker_mode": self.broker_mode,
             "filled_quantity": self.filled_quantity,
             "avg_fill_price": self.avg_fill_price,
             "last_synced_at": self.last_synced_at,
@@ -322,6 +336,11 @@ class OrderCandidate:
                 order_type=req.get("order_type", "limit"),
                 limit_price=_optional_float(req.get("limit_price")),
                 reason=str(req.get("reason", "")),
+                client_order_id=(
+                    str(req["client_order_id"])
+                    if req.get("client_order_id")
+                    else None
+                ),
             ),
             status=row.get("status", "pending"),
             created_at=str(row["created_at"]),
@@ -332,7 +351,26 @@ class OrderCandidate:
             submitted_at=row.get("submitted_at"),
             broker_order_id=row.get("broker_order_id"),
             broker_message=row.get("broker_message"),
-            broker=str(row.get("broker", "mock")),
+            rejection_code=(
+                str(row["rejection_code"]) if row.get("rejection_code") else None
+            ),
+            rejection_retryable=(
+                bool(row["rejection_retryable"])
+                if row.get("rejection_retryable") is not None
+                else None
+            ),
+            broker=str(row.get("broker", "unbound")),
+            broker_instance_id=(
+                str(row["broker_instance_id"])
+                if row.get("broker_instance_id")
+                else None
+            ),
+            broker_account_id=(
+                str(row["broker_account_id"])
+                if row.get("broker_account_id")
+                else None
+            ),
+            broker_mode=(str(row["broker_mode"]) if row.get("broker_mode") else None),
             filled_quantity=int(row.get("filled_quantity", 0) or 0),
             avg_fill_price=_optional_float(row.get("avg_fill_price")),
             last_synced_at=row.get("last_synced_at"),
