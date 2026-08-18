@@ -215,8 +215,31 @@
 </head>
 <body class="min-h-screen">
 
+<!-- ─── Safety Bar ──────────────────────────────────────────────
+     Always visible, every screen. Answers "is my money safe right now?"
+     from a single /api/safety call. Present because every guard the bot
+     has (kill switch, loss breaker, order halts, armed stops) used to
+     exist only in log lines, so a halted bot looked identical to an idle
+     one. Colour encodes the verdict, not individual fields:
+       red    = new buys are blocked right now
+       amber  = needs a human look, trading continues
+       green  = every probe answered, and answered well
+     A probe that could not answer renders amber, never green.
+-->
+<div id="safetyBar" class="sticky top-0 z-50 text-sm border-b border-border bg-slate-100">
+  <div class="max-w-screen-lg mx-auto px-6 py-2 flex items-center gap-4 flex-wrap">
+    <span id="sbDot" class="inline-flex items-center gap-1.5 font-bold">
+      <i class="ph-fill ph-circle-notch animate-spin"></i><span id="sbLevel">확인 중</span>
+    </span>
+    <span id="sbReasons" class="text-subtext truncate flex-1 min-w-0"></span>
+    <span id="sbStops" class="tabular-nums"></span>
+    <span id="sbAssets" class="tabular-nums font-semibold"></span>
+    <span id="sbHeartbeat" class="text-xs text-subtext tabular-nums"></span>
+  </div>
+</div>
+
 <!-- ─── Top Nav ─────────────────────────────────────────────── -->
-<nav class="sticky top-0 z-40 bg-white/85 backdrop-blur-md border-b border-border">
+<nav class="sticky top-[41px] z-40 bg-white/85 backdrop-blur-md border-b border-border">
   <div class="max-w-screen-lg mx-auto px-6 h-14 flex items-center justify-between">
     <div class="flex items-center gap-2 cursor-pointer" onclick="go('analyze')">
       <i class="ph-fill ph-trend-up text-tossblue text-2xl"></i>
@@ -2784,10 +2807,85 @@ function renderLogRecords(records, total) {
 
 
 // ──────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────
+// Safety bar
+// One /api/safety poll drives the whole bar. Rendering rules that
+// matter: null means "could not read", which must look like a warning
+// rather than a zero — showing a confident 0 for something we failed to
+// fetch is the exact false-assurance this bar exists to prevent.
+// ──────────────────────────────────────────────────────────
+const SB_STYLE = {
+  ok:     { bar: 'bg-emerald-50 border-emerald-200', text: 'text-emerald-700', icon: 'ph-fill ph-shield-check',   label: '정상' },
+  warn:   { bar: 'bg-amber-50 border-amber-200',     text: 'text-amber-700',   icon: 'ph-fill ph-warning',        label: '주의' },
+  halted: { bar: 'bg-rose-50 border-rose-200',       text: 'text-rose-700',    icon: 'ph-fill ph-hand-palm',      label: '신규매수 중단' },
+  down:   { bar: 'bg-slate-100 border-border',       text: 'text-subtext',     icon: 'ph ph-plugs',               label: '서버 응답 없음' },
+};
+
+function sbAge(sec) {
+  if (sec == null) return '';
+  if (sec < 60) return `${Math.round(sec)}초 전`;
+  if (sec < 3600) return `${Math.round(sec / 60)}분 전`;
+  return `${(sec / 3600).toFixed(1)}시간 전`;
+}
+
+function renderSafety(d) {
+  const style = SB_STYLE[d?.overall?.level] || SB_STYLE.down;
+  $('safetyBar').className =
+    `sticky top-0 z-50 text-sm border-b ${style.bar}`;
+  $('sbDot').className = `inline-flex items-center gap-1.5 font-bold ${style.text}`;
+  $('sbDot').innerHTML =
+    `<i class="${style.icon}"></i><span id="sbLevel">${style.label}</span>`;
+
+  const reasons = d?.overall?.reasons || [];
+  $('sbReasons').textContent = reasons.join(' · ');
+  $('sbReasons').title = reasons.join('\n');
+
+  // Armed stops: only meaningful when the feature is on.
+  const pos = d?.positions || {};
+  if (!d?.protective_stop_enabled) {
+    $('sbStops').innerHTML = pos.count
+      ? `<span class="text-subtext" title="config.yaml protective_stop=false">🛡️ 미사용 · 보유 ${pos.count}</span>`
+      : '';
+  } else if (pos.count == null || pos.armed == null) {
+    $('sbStops').innerHTML = `<span class="text-amber-700">🛡️ ?/? 확인 실패</span>`;
+  } else {
+    const full = pos.count === pos.armed;
+    const pending = pos.pending_intent
+      ? ` <span class="text-amber-700">(미확인 ${pos.pending_intent})</span>` : '';
+    $('sbStops').innerHTML =
+      `<span class="${full ? 'text-emerald-700' : 'text-amber-700'}" title="브로커 측 손절 무장">` +
+      `🛡️ ${pos.armed}/${pos.count}</span>${pending}`;
+  }
+
+  const krw = d?.broker_state?.portfolio_krw;
+  $('sbAssets').innerHTML = krw == null
+    ? `<span class="text-subtext" title="통합자산 조회 실패">₩ —</span>`
+    : `<span title="양 통화 합산 원화 환산 (사이징·브레이커 기준)">₩${Math.round(krw).toLocaleString()}</span>`;
+
+  // Only show a heartbeat that exists; an absent one just means "not running".
+  const hb = d?.heartbeats || {};
+  const live = Object.entries(hb).filter(([, h]) => h.age_seconds != null);
+  $('sbHeartbeat').textContent = live.length
+    ? live.map(([k, h]) => `${k} ${sbAge(h.age_seconds)}`).join(' · ')
+    : '';
+}
+
+async function pollSafety() {
+  try {
+    // api() unwraps the {success, data} envelope every route uses.
+    renderSafety(await api('GET', '/api/safety'));
+  } catch (e) {
+    renderSafety(null);  // server down renders as its own state, not as ok
+  }
+}
+
+// ──────────────────────────────────────────────────────────
 // Init
 // ──────────────────────────────────────────────────────────
 loadWatchlists($('sFile'));
 loadWatchlists($('autoFile'));
+pollSafety();
+setInterval(pollSafety, 5000);
 go('analyze');
 </script>
 </body>

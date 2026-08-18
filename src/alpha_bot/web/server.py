@@ -25,6 +25,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from alpha_bot.web import handlers_analysis as _analysis
+from alpha_bot.web import handlers_safety as _safety
 from alpha_bot.web import handlers_config as _config
 from alpha_bot.web import handlers_mock as _mock
 from alpha_bot.web import handlers_orders as _orders
@@ -88,6 +89,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/api/bot/holdings": lambda: self._dispatch(_portfolio.handle_bot_holdings(params)),
             "/api/bot/stats": lambda: self._dispatch(_portfolio.handle_bot_stats()),
             "/api/mock/state": lambda: self._dispatch(_mock.handle_mock_state()),
+            "/api/safety": lambda: self._dispatch(_safety.handle_safety()),
         }
         handler = routes.get(path)
         if handler:
