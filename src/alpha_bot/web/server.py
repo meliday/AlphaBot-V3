@@ -46,6 +46,12 @@ def _serialise(obj: Any) -> Any:
         return obj.isoformat()
     if isinstance(obj, list):
         return [_serialise(item) for item in obj]
+    if isinstance(obj, (set, frozenset, tuple)):
+        # Sorted so the JSON is stable across runs — an unordered set would
+        # otherwise make config diffs and UI fields shuffle for no reason.
+        # Without this branch these fell through to str() and leaked Python
+        # reprs like "frozenset({'VOO'})" into form inputs.
+        return [_serialise(item) for item in sorted(obj, key=str)]
     if isinstance(obj, dict):
         return {k: _serialise(v) for k, v in obj.items()}
     if is_dataclass(obj) and not isinstance(obj, type):
@@ -118,6 +124,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "/api/auto/start": lambda: self._dispatch(_config.handle_auto_start(body)),
                 "/api/auto/stop": lambda: self._dispatch(_config.handle_auto_stop()),
                 "/api/settings": lambda: self._dispatch(_config.handle_save_settings(body)),
+                "/api/config": lambda: self._dispatch(_config.handle_save_config(body)),
                 "/api/watchlist/save": lambda: self._dispatch(_config.handle_watchlist_save(body)),
                 "/api/mock/order": lambda: self._dispatch(_mock.handle_mock_order(body)),
                 "/api/mock/set-cash": lambda: self._dispatch(_mock.handle_mock_set_cash(body)),

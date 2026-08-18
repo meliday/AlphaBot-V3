@@ -194,7 +194,12 @@ class GateTests(unittest.TestCase):
             )
             blocked = {t["ticker"]: t["blocked_by"] for t in payload["tickers"]}
             self.assertEqual(blocked["VOO"], "보호 종목")
-            self.assertIsNone(blocked["NVDA"])
+            # NVDA may legitimately be blocked by a closed session or a
+            # bearish regime depending on when the suite runs — assert only
+            # that protection is not the reason, which is what this test is
+            # actually about. (An earlier version asserted None and broke
+            # the moment the US market closed mid-session.)
+            self.assertNotEqual(blocked["NVDA"], "보호 종목")
 
     def test_capacity_reflects_the_position_cap(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -1068,14 +1068,102 @@
       <p class="text-subtext mt-2">민감한 값은 저장 시 디스크의 <code class="bg-dim px-1.5 rounded text-xs">.env</code>에 기록됩니다.</p>
     </div>
 
-    <div class="card space-y-5">
-      <h3 class="font-extrabold text-lg">전략 (config.yaml)</h3>
-      <div id="cfgGrid" class="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm"></div>
+    <!-- ── Settings are grouped by blast radius, not by file. ──
+         Changing min_rr and flipping TOSS_ENABLE_LIVE_ORDERS used to sit
+         side by side at equal weight. Tier 1 tunes which setups qualify,
+         tier 2 decides how much money each one risks, tier 3 decides
+         whether orders reach a real venue at all. -->
+
+    <!-- Tier 1 — strategy -->
+    <div class="card space-y-4">
+      <div>
+        <h3 class="font-extrabold text-lg">전략</h3>
+        <p class="text-xs text-subtext mt-1">어떤 셋업을 매수 후보로 볼지. 잘못 잡아도 손실 규모가 아니라 거래 빈도가 바뀝니다.</p>
+      </div>
+      <div class="grid md:grid-cols-3 gap-3 text-sm">
+        <label class="flex flex-col gap-1">
+          <span class="text-subtext text-xs px-1">min_score <span class="text-mute">(0–30)</span></span>
+          <input id="cfgMinScore" type="number" min="0" max="30" step="1" class="input rounded-toss-sm px-3 py-2" />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-subtext text-xs px-1">min_rr <span class="text-mute">(진입가 기준)</span></span>
+          <input id="cfgMinRr" type="number" min="0" max="20" step="0.1" class="input rounded-toss-sm px-3 py-2" />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-subtext text-xs px-1">require_breakout</span>
+          <select id="cfgRequireBreakout" class="input rounded-toss-sm px-3 py-2">
+            <option value="false">false (스퀴즈 진입 허용)</option>
+            <option value="true">true (돌파만)</option>
+          </select>
+        </label>
+      </div>
+      <p class="text-xs text-subtext">
+        min_rr은 <b>실제 주문가(종가×1.01)</b> 기준입니다. 과거 종가 기준 1.5와 같은 엄격도는 약 1.0이고,
+        현재 1.2는 의도적으로 조금 더 엄격한 값입니다.
+      </p>
+    </div>
+
+    <!-- Tier 2 — risk -->
+    <div class="card space-y-4 border-l-4 border-amber-400">
+      <div>
+        <h3 class="font-extrabold text-lg">리스크</h3>
+        <p class="text-xs text-subtext mt-1">한 거래에 얼마를 걸고, 어디서 멈출지. <b>변경 시 다음 주문부터 실제 금액이 달라집니다.</b></p>
+      </div>
+      <div class="grid md:grid-cols-3 gap-3 text-sm">
+        <label class="flex flex-col gap-1">
+          <span class="text-subtext text-xs px-1">risk_per_trade_pct</span>
+          <input id="cfgRiskPct" type="number" min="0" max="100" step="0.1" class="input rounded-toss-sm px-3 py-2" />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-subtext text-xs px-1">max_positions</span>
+          <input id="cfgMaxPositions" type="number" min="1" max="100" step="1" class="input rounded-toss-sm px-3 py-2" />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-subtext text-xs px-1">max_position_pct <span class="text-mute">(0=해제)</span></span>
+          <input id="cfgMaxPositionPct" type="number" min="0" max="100" step="1" class="input rounded-toss-sm px-3 py-2" />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-subtext text-xs px-1">daily_loss_limit_pct <span class="text-mute">(0=해제)</span></span>
+          <input id="cfgDailyLossPct" type="number" min="0" max="100" step="0.1" class="input rounded-toss-sm px-3 py-2" />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-subtext text-xs px-1">stale_order_minutes <span class="text-mute">(0=해제)</span></span>
+          <input id="cfgStaleMinutes" type="number" min="0" max="1440" step="1" class="input rounded-toss-sm px-3 py-2" />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-subtext text-xs px-1 font-bold">protective_stop</span>
+          <select id="cfgProtectiveStop" class="input rounded-toss-sm px-3 py-2 font-semibold">
+            <option value="false">false (폴링 손절만)</option>
+            <option value="true">true (브로커 조건주문)</option>
+          </select>
+        </label>
+      </div>
+      <div class="text-xs text-subtext space-y-1">
+        <p><b>protective_stop</b>을 켜면 보유 포지션의 손절선이 거래소에 조건주문으로 등록됩니다 — 봇이 꺼져 있어도 발동합니다.
+           KR은 정규장에만, US는 확장세션에도 발동합니다.</p>
+      </div>
+      <label class="flex flex-col gap-1 text-sm">
+        <span class="text-subtext text-xs px-1 font-bold">protected_tickers <span class="text-mute">(쉼표 구분)</span></span>
+        <input id="cfgProtectedTickers" placeholder="VOO, QQQM, BRK.B" class="input rounded-toss-sm px-3 py-2 font-mono text-sm" />
+        <span class="text-xs text-subtext px-1">
+          봇이 <b>매수·매도·손절 전부</b> 하지 않을 종목. 직접 적립식으로 모으는 보유를 여기 넣으세요.
+        </span>
+      </label>
+      <div class="flex items-center gap-3">
+        <button onclick="saveConfig()" class="btn btn-primary text-sm">
+          <i class="ph-bold ph-floppy-disk"></i> 전략·리스크 저장
+        </button>
+        <span id="cfgSaveMsg" class="text-sm"></span>
+      </div>
     </div>
 
     <div class="card space-y-4">
-      <h3 class="font-extrabold text-lg">Toss Open API 인증</h3>
-      <p class="text-xs text-subtext">Client ID·Secret은 마스킹됩니다. 계좌가 여러 개면 Account Seq를 반드시 지정하세요. 실주문은 기본적으로 차단됩니다.</p>
+      <h3 class="font-extrabold text-lg">연결 · Toss Open API</h3>
+      <div class="rounded-toss-sm bg-rose-50 border border-rose-200 px-3 py-2 text-xs text-rose-700">
+        <b>가장 위험한 설정입니다.</b> 아래 <code>TOSS_ENABLE_LIVE_ORDERS</code>를 true로 두면
+        봇이 실제 계좌에 주문을 전송합니다. 검증 전에는 false로 유지하세요.
+      </div>
+      <p class="text-xs text-subtext">Client ID·Secret은 마스킹됩니다. 계좌가 여러 개면 Account Seq를 반드시 지정하세요.</p>
       <div class="grid md:grid-cols-2 gap-3">
         <label class="flex flex-col gap-1 text-sm">
           <span class="text-subtext text-xs px-1">TOSS_CLIENT_ID</span>
@@ -2592,23 +2680,18 @@ async function loadSettings() {
     const cfg = data.config;
     const env = data.env || {};
 
-    const grid = $('cfgGrid');
-    const labels = {
-      default_market: '기본 시장',
-      broker:         '기본 브로커',
-      data_dir:       '데이터 폴더',
-      approval_queue: '승인 큐 파일',
-      max_positions:  '최대 동시 포지션',
-      risk_per_trade_pct: '거래당 리스크 %',
-      min_score:      '최소 점수',
-      min_rr:         '최소 R/R',
-    };
-    grid.innerHTML = Object.entries(labels).map(([k, lbl]) => `
-      <div class="bg-dim rounded-toss-sm p-3">
-        <div class="text-xs text-subtext font-bold">${lbl}</div>
-        <div class="font-extrabold mt-0.5">${cfg[k] != null ? cfg[k] : '-'}</div>
-      </div>
-    `).join('');
+    // config.yaml is now editable, not just displayed. Values round-trip
+    // through the server, which re-validates everything — the browser is
+    // not a trust boundary for numbers that size real orders.
+    Object.entries(CFG_FIELDS).forEach(([id, key]) => {
+      const el = $(id);
+      if (!el) return;
+      const value = cfg[key];
+      el.value = typeof value === 'boolean' ? String(value)
+               : Array.isArray(value) ? value.join(', ')
+               : value != null ? value : '';
+    });
+    $('cfgSaveMsg').textContent = '';
 
     SETTINGS_ENV_KEYS.forEach(k => {
       const el = $('env' + k);
@@ -2859,6 +2942,46 @@ function renderLogRecords(records, total) {
 
 
 // ──────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────
+// Settings — config.yaml round-trip
+// ──────────────────────────────────────────────────────────
+const CFG_FIELDS = {
+  cfgMinScore:        'min_score',
+  cfgMinRr:           'min_rr',
+  cfgRequireBreakout: 'require_breakout',
+  cfgRiskPct:         'risk_per_trade_pct',
+  cfgMaxPositions:    'max_positions',
+  cfgMaxPositionPct:  'max_position_pct',
+  cfgDailyLossPct:    'daily_loss_limit_pct',
+  cfgStaleMinutes:    'stale_order_minutes',
+  cfgProtectiveStop:  'protective_stop',
+  cfgProtectedTickers:'protected_tickers',
+};
+
+async function saveConfig() {
+  const msg = $('cfgSaveMsg');
+  const payload = {};
+  for (const [id, key] of Object.entries(CFG_FIELDS)) {
+    const el = $(id);
+    if (!el) continue;
+    // Empty is meaningful for protected_tickers (clearing the list) but
+    // would be an invalid number elsewhere — skip blanks for the rest.
+    if (el.value === '' && key !== 'protected_tickers') continue;
+    payload[key] = el.value;
+  }
+  msg.className = 'text-sm text-subtext';
+  msg.textContent = '저장 중...';
+  try {
+    const res = await api('POST', '/api/config', { config: payload });
+    msg.className = 'text-sm text-rise';
+    msg.textContent = `저장됨: ${res.saved.join(', ')}`;
+    pollSafety();   // protective_stop / protected_tickers feed the bar
+  } catch (e) {
+    msg.className = 'text-sm text-fall';
+    msg.textContent = e.message;
+  }
+}
+
 // ──────────────────────────────────────────────────────────
 // Reconciliation panel
 // ──────────────────────────────────────────────────────────

@@ -69,6 +69,133 @@ def _write_env_partial(updates: dict[str, str]) -> None:
     os.chmod(ENV_PATH, 0o600)
 
 
+# ── config.yaml writer + validation ──────────────────────────────────
+#
+# These values size real orders and gate real safety machinery, so the
+# writer is stricter than the .env one: every field is bounds-checked
+# server-side (a browser is not a trust boundary), an unknown key is
+# rejected rather than silently written, and the whole update is refused
+# if any field is bad — a half-applied risk config is worse than none.
+
+_CONFIG_NUMERIC: dict[str, tuple[type, float, float]] = {
+    # key: (type, min, max)
+    "min_score": (int, 0, 30),          # scoreboard is out of 30
+    "min_rr": (float, 0.0, 20.0),
+    "risk_per_trade_pct": (float, 0.0, 100.0),
+    "max_positions": (int, 1, 100),
+    "max_position_pct": (float, 0.0, 100.0),      # 0 disables
+    "daily_loss_limit_pct": (float, 0.0, 100.0),  # 0 disables
+    "stale_order_minutes": (int, 0, 1440),        # 0 disables
+}
+_CONFIG_BOOL = {"require_breakout", "protective_stop"}
+_CONFIG_TEXT = {"broker", "default_market", "protected_tickers"}
+
+_BROKERS = {"mock", "toss", "kis"}
+_MARKETS = {"KR", "US"}
+
+
+def _coerce_config_value(key: str, value: Any) -> tuple[Any, str | None]:
+    """Return ``(normalised, error)`` for one config field."""
+
+    if key in _CONFIG_NUMERIC:
+        kind, low, high = _CONFIG_NUMERIC[key]
+        try:
+            number = kind(value)
+        except (TypeError, ValueError):
+            return None, f"{key}: 숫자가 아닙니다 ({value!r})"
+        if not (low <= number <= high):
+            return None, f"{key}: {low}~{high} 범위를 벗어났습니다 ({number})"
+        return number, None
+
+    if key in _CONFIG_BOOL:
+        if isinstance(value, bool):
+            return value, None
+        text = str(value).strip().lower()
+        if text in {"true", "1", "yes", "on"}:
+            return True, None
+        if text in {"false", "0", "no", "off"}:
+            return False, None
+        return None, f"{key}: true/false 가 아닙니다 ({value!r})"
+
+    if key == "broker":
+        text = str(value).strip().lower()
+        if text not in _BROKERS:
+            return None, f"broker: {'/'.join(sorted(_BROKERS))} 중 하나여야 합니다"
+        return text, None
+
+    if key == "default_market":
+        text = str(value).strip().upper()
+        if text not in _MARKETS:
+            return None, "default_market: KR 또는 US 여야 합니다"
+        return text, None
+
+    if key == "protected_tickers":
+        raw = value if isinstance(value, str) else ", ".join(map(str, value or []))
+        tickers = [t.strip().upper() for t in raw.replace(",", " ").split() if t.strip()]
+        for ticker in tickers:
+            if not all(c.isascii() and (c.isalnum() or c in ".-") for c in ticker):
+                return None, f"protected_tickers: 잘못된 종목코드 ({ticker})"
+        return ", ".join(tickers), None
+
+    return None, f"알 수 없는 설정 키: {key}"
+
+
+def _write_config_partial(updates: dict[str, Any]) -> None:
+    """Rewrite config.yaml values in place, preserving comments and order."""
+
+    existing = CONFIG_PATH.read_text(encoding="utf-8").splitlines() if CONFIG_PATH.exists() else []
+    written: set[str] = set()
+    output: list[str] = []
+    for raw in existing:
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#") or ":" not in stripped or stripped.startswith("-"):
+            output.append(raw)
+            continue
+        key = stripped.split(":", 1)[0].strip()
+        if key in updates:
+            value = updates[key]
+            rendered = "true" if value is True else "false" if value is False else str(value)
+            output.append(f"{key}: {rendered}")
+            written.add(key)
+        else:
+            output.append(raw)
+    for key, value in updates.items():
+        if key not in written:
+            rendered = "true" if value is True else "false" if value is False else str(value)
+            output.append(f"{key}: {rendered}")
+
+    temp_path = CONFIG_PATH.with_name(CONFIG_PATH.name + ".tmp")
+    temp_path.write_text("\n".join(output) + "\n", encoding="utf-8")
+    os.replace(temp_path, CONFIG_PATH)
+
+
+def handle_save_config(body: dict[str, Any]) -> dict[str, Any] | tuple[str, int]:
+    raw = body.get("config")
+    if not isinstance(raw, dict):
+        return ("config must be an object", 400)
+
+    updates: dict[str, Any] = {}
+    errors: list[str] = []
+    for key, value in raw.items():
+        if key not in _CONFIG_NUMERIC and key not in _CONFIG_BOOL and key not in _CONFIG_TEXT:
+            errors.append(f"알 수 없는 설정 키: {key}")
+            continue
+        normalised, error = _coerce_config_value(key, value)
+        if error:
+            errors.append(error)
+        else:
+            updates[key] = normalised
+
+    if errors:
+        # All-or-nothing: a partially applied risk config is worse than none.
+        return ("; ".join(errors), 400)
+    if not updates:
+        return ("변경할 설정이 없습니다", 400)
+
+    _write_config_partial(updates)
+    return {"saved": sorted(updates.keys())}
+
+
 # ── Handler functions ────────────────────────────────────────────────
 
 
