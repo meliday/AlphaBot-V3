@@ -127,6 +127,16 @@ def run_auto_iteration(
         logger.exception("Position management failed")
         say(f"⚠️ 포지션 모니터링 실패: {exc}")
 
+    # ── Orphan-stop reconciliation (warn-only). ──
+    # Detects venue stops the queue does not reference — the residue of the
+    # one recovery hole idempotent replay cannot close. Runs on the 5-minute
+    # loop, not the tick monitor, because it costs one list call per symbol.
+    try:
+        from alpha_bot.auto.protective_stops import warn_unreferenced_stops
+        warn_unreferenced_stops(queue, broker, say)
+    except Exception as exc:
+        logger.warning("Orphan-stop sweep failed: %s", exc)
+
     # ── Kill switch: block ALL new buys while the file exists. ──
     # Exit management above still ran — held positions stay protected even
     # (especially) while the operator has pulled the emergency brake.

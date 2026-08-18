@@ -100,18 +100,6 @@ class ProtectiveStopBroker(Protocol):
         """Arm a stop that sells ``quantity`` at market once price <= stop. Returns its id."""
         ...
 
-    def amend_protective_stop(
-        self,
-        stop_id: str,
-        *,
-        ticker: str,
-        market: Market,
-        quantity: int,
-        stop_price: float,
-    ) -> str:
-        """Re-arm with new quantity/price. Returns the id to store (may differ)."""
-        ...
-
     def cancel_protective_stop(self, stop_id: str) -> None:
         ...
 
@@ -120,9 +108,11 @@ class ProtectiveStopBroker(Protocol):
         ...
 
 
+# No "amend" in the capability on purpose: Toss's modify endpoint has no
+# idempotency key, so a lost response strands an untracked stop. Re-arming is
+# always cancel + idempotent create, orchestrated by auto/protective_stops.
 _PROTECTIVE_STOP_METHODS = (
     "place_protective_stop",
-    "amend_protective_stop",
     "cancel_protective_stop",
     "protective_stop_status",
 )

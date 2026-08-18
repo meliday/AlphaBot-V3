@@ -20,6 +20,7 @@ from alpha_bot.approval import ApprovalQueue
 from alpha_bot.approval.queue import order_belongs_to_broker
 from alpha_bot.auto.protective_stops import (
     release_protective_stop,
+    resolve_pending_stop,
     stop_engaged,
     sync_protective_stop,
 )
@@ -384,7 +385,13 @@ def _ratchet_trail(
     """Raise the runner's trailing stop; never lowers, floored at breakeven."""
     atr14 = latest_atr(candles, 14)
     candidate = max(current - _TRAIL_ATR_MULT * atr14, buy.avg_fill_price)
-    if buy.trail_stop is not None and candidate <= buy.trail_stop:
+    # Minimum ratchet step (0.1×ATR): during a rally the tick-driven monitor
+    # would otherwise raise the trail on every evaluation, and each local
+    # ratchet is a full queue-file rewrite plus (when enabled) a venue stop
+    # re-arm. Quantising the ratchet trades ≤0.1×ATR of trail tightness for
+    # bounded I/O; exits are unaffected because the trigger comparison uses
+    # the persisted trail either way.
+    if buy.trail_stop is not None and candidate - buy.trail_stop < 0.1 * atr14:
         return
     updated = _replace(buy, trail_stop=round(candidate, 4))
     try:
@@ -586,6 +593,16 @@ def manage_open_positions(
 
         scaled_out = _has_completed_scale_out(buy, by_id)
 
+        # A create whose response was lost leaves a stop that may exist at
+        # the venue without a known id. Repair opportunistically (idempotent
+        # replay) but do NOT gate the loop on it: evaluation and trail
+        # ratcheting are harmless, and gating here would freeze position
+        # management for as long as the venue API is down. The one dangerous
+        # action — submitting a bot sell — is guarded separately: the release
+        # step below resolves-or-aborts before any sell goes out.
+        buy, _ = resolve_pending_stop(queue, broker, buy, say, quiet=True)
+        by_id[buy.id] = buy
+
         # A fired venue stop is already selling these shares; never race it.
         if stop_engaged(broker, buy, say):
             continue
@@ -604,6 +621,11 @@ def manage_open_positions(
                 scaled_out=scaled_out,
                 say=say,
                 enabled=protective_stops,
+                # Trail-driven re-arms are throttled to 0.25×ATR of drift:
+                # the venue brake may lag the local trail by that much, in
+                # exchange for not turning every rally tick into a venue
+                # cancel+create. Quantity changes always re-arm.
+                amend_tolerance=0.25 * latest_atr(candles, 14),
             )
             continue
 

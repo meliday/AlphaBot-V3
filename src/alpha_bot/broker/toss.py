@@ -803,28 +803,22 @@ class TossBroker:
         )
         return result.conditional_order_id
 
-    def amend_protective_stop(
-        self,
-        stop_id: str,
-        *,
-        ticker: str,
-        market: Market,
-        quantity: int,
-        stop_price: float,
-    ) -> str:
-        # Toss implements modify as cancel+create and returns a NEW id, so the
-        # caller must persist whatever comes back.
-        result = self.modify_conditional_order(
-            stop_id,
-            self._protective_stop_request(
-                ticker=ticker,
-                market=market,
-                quantity=quantity,
-                stop_price=stop_price,
-                client_order_id=None,
-            ),
-        )
-        return result.conditional_order_id
+    def list_protective_stop_ids(self, ticker: str) -> list[str]:
+        """OPEN conditional orders on ``ticker`` shaped like our stops.
+
+        SINGLE + MARKET is the bot's protective-stop shape. The list response
+        has no ``clientOrderId``, so ownership cannot be proven — callers use
+        this for warn-only reconciliation, never for cancellation.
+        """
+
+        rows = self.list_conditional_orders("OPEN", symbol=ticker)
+        return [
+            str(row.get("conditionalOrderId"))
+            for row in rows
+            if row.get("conditionalOrderId")
+            and str(row.get("type") or "").upper() == "SINGLE"
+            and str(row.get("orderType") or "").upper() == "MARKET"
+        ]
 
     def cancel_protective_stop(self, stop_id: str) -> None:
         try:

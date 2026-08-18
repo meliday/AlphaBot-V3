@@ -351,34 +351,13 @@ class MockBroker:
         self._write_state(state)
         return stop_id
 
-    def amend_protective_stop(
-        self,
-        stop_id: str,
-        *,
-        ticker: str,
-        market: Market,
-        quantity: int,
-        stop_price: float,
-    ) -> str:
-        if quantity <= 0:
-            raise BrokerError("Protective stop quantity must be positive.")
-        state = self._read_state()
-        stops = state.setdefault("protective_stops", {})
-        if stop_id not in stops:
-            raise BrokerError(f"Unknown protective stop: {stop_id}")
-        row = stops.pop(stop_id)
-        # Mirror Toss: modify is cancel+create and yields a new id.
-        new_id = f"MOCKCOND-{uuid.uuid4().hex[:12].upper()}"
-        row.update(
-            ticker=ticker.upper(),
-            market=market,
-            quantity=int(quantity),
-            stop_price=float(stop_price),
-            status="WATCHING",
-        )
-        stops[new_id] = row
-        self._write_state(state)
-        return new_id
+    def list_protective_stop_ids(self, ticker: str) -> list[str]:
+        stops = self._read_state().get("protective_stops", {})
+        symbol = ticker.upper()
+        return [
+            stop_id for stop_id, row in stops.items()
+            if str(row.get("ticker", "")).upper() == symbol
+        ]
 
     def cancel_protective_stop(self, stop_id: str) -> None:
         state = self._read_state()
