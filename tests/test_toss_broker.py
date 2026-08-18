@@ -468,3 +468,34 @@ class MissingStopStatusTests(unittest.TestCase):
         broker = self._broker(TossApiError(400, "account-header-required", "헤더 누락"))
         with self.assertRaises(TossApiError):
             broker.protective_stop_status("ANY")
+
+
+class CancelIdempotencyTests(unittest.TestCase):
+    """Observed live: Toss cancellation is asynchronous (PENDING_CANCEL →
+    CANCELED) and a repeated cancel answers 409 already-canceled. That is
+    the desired end state, so the adapter reports idempotent success; a 409
+    already-filled is a genuine refusal the caller must see."""
+
+    def _broker(self, exc: TossApiError) -> TossBroker:
+        class Client:
+            def request(self, *args, **kwargs):
+                raise exc
+
+        settings = TossSettings(client_id="c", client_secret="s", account_seq=1)
+        return TossBroker(settings, client=Client())  # type: ignore[arg-type]
+
+    def test_already_canceled_is_idempotent_success(self):
+        broker = self._broker(TossApiError(409, "already-canceled", "취소된 주문입니다."))
+        result = broker.cancel_order("REF-1", "US", "F", 1)
+        self.assertTrue(result.accepted)
+        self.assertIn("already-canceled", result.message)
+
+    def test_already_filled_is_a_real_refusal(self):
+        broker = self._broker(TossApiError(409, "already-filled", "이미 체결된 주문입니다."))
+        result = broker.cancel_order("REF-1", "US", "F", 1)
+        self.assertFalse(result.accepted)
+
+    def test_already_processing_is_a_soft_refusal_not_a_crash(self):
+        broker = self._broker(TossApiError(409, "already-processing", "처리 중"))
+        result = broker.cancel_order("REF-1", "US", "F", 1)
+        self.assertFalse(result.accepted)  # next sweep retries

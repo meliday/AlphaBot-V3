@@ -1082,7 +1082,22 @@ class TossBroker:
                 idempotent=True,
             )
         except TossApiError as exc:
-            if exc.status in {400, 401, 403, 404, 422}:
+            # Observed live (stage-2 verification): cancellation is
+            # asynchronous at Toss — the original order passes through
+            # PENDING_CANCEL before landing on CANCELED, and a repeated
+            # cancel meanwhile answers 409 already-canceled. That repeat is
+            # the *desired end state*, not a failure: the stale-order sweep
+            # and the tiny-order runner both legitimately re-cancel, so
+            # treat it as idempotent success. 409 already-filled is a real
+            # refusal (the shares exist; sync will pick the fill up), and
+            # 409 already-processing resolves on the next sweep.
+            if exc.status == 409 and exc.code == "already-canceled":
+                return OrderResult(
+                    self.name, True, broker_order_id,
+                    "Toss cancel already effective (already-canceled).",
+                    exc.data,
+                )
+            if exc.status in {400, 401, 403, 404, 409, 422}:
                 return OrderResult(self.name, False, broker_order_id, str(exc), exc.data)
             raise
         result = raw.get("result") or {}

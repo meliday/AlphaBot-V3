@@ -193,11 +193,22 @@ def cmd_cancel(args) -> None:
         order.broker_order_id, "US", order.request.ticker, order.request.quantity
     )
     print(f"브로커 응답: accepted={result.accepted} msg={result.message}")
-    queue.sync_with_broker(broker)
-    after = find_test_buy(queue, args.ticker)
+    if not result.accepted:
+        raise SystemExit("취소 거부 — 메시지 확인 (already-filled면 체결된 것: status 실행)")
+    # Toss cancellation is asynchronous: the original order sits in
+    # PENDING_CANCEL (mapped to our "submitted") briefly before CANCELED.
+    # Poll a few beats instead of telling the operator to re-run cancel.
+    import time as _time
+    after = None
+    for _ in range(5):
+        queue.sync_with_broker(broker)
+        after = find_test_buy(queue, args.ticker)
+        if after is not None and after.status in {"cancelled", "partially_filled_cancelled"}:
+            break
+        _time.sleep(2)
     show(after)
     ok = after is not None and after.status in {"cancelled", "partially_filled_cancelled"}
-    print("✅ 취소 → 큐 상태 매핑 정상" if ok else "⚠️ 상태가 아직 반영되지 않음 — status 재실행")
+    print("✅ 취소 → 큐 상태 매핑 정상" if ok else "⚠️ 아직 PENDING_CANCEL — 잠시 후 status 재실행")
 
 
 def cmd_sellback(args) -> None:
