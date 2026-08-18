@@ -14,7 +14,7 @@ import zlib
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_FLOOR, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Literal
 
@@ -1113,7 +1113,8 @@ class TossBroker:
         for item in result.get("items") or []:
             if item.get("marketCountry") != market:
                 continue
-            quantity = _whole_quantity(item.get("quantity", "0"), "holding quantity")
+            symbol = str(item.get("symbol") or "?").upper()
+            quantity = _floor_holding_quantity(item.get("quantity", "0"), symbol)
             if quantity <= 0:
                 continue
             avg = float(item.get("averagePurchasePrice") or 0)
@@ -1306,6 +1307,43 @@ def _decimal_string(value: Any, *, integer_only: bool = False) -> str:
             raise BrokerOrderRejected(f"KR price must be an integer: {value}")
         return str(int(decimal))
     return format(decimal, "f")
+
+
+_FRACTIONAL_WARNED: set[str] = set()
+
+
+def _floor_holding_quantity(value: Any, symbol: str) -> int:
+    """Whole shares held, rounding fractions DOWN.
+
+    Toss reports fractional quantities for shares bought by amount (the
+    소수점 매수 that DCA investors use). The previous strict guard raised on
+    any fraction, which poisoned the whole get_positions() snapshot — and
+    because both callers swallow that exception, a single unrelated
+    fractional holding silently disabled the two guards that depend on it:
+    queue-vs-broker reconciliation, and the "does the broker actually hold
+    these shares?" check before every bot sell.
+
+    Flooring is correct for both uses. Existence: >0 still means held.
+    Sell sizing: the bot may only sell whole shares, and the floor is the
+    largest amount guaranteed to be there — never an oversell. The order
+    path keeps its own strict integer validation, so the bot still cannot
+    *place* a fractional order.
+    """
+
+    try:
+        quantity = Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
+        raise BrokerError(f"Invalid Toss holding quantity for {symbol}: {value}") from exc
+    whole = int(quantity.to_integral_value(rounding=ROUND_FLOOR))
+    if quantity != quantity.to_integral_value() and symbol not in _FRACTIONAL_WARNED:
+        _FRACTIONAL_WARNED.add(symbol)
+        logger.info(
+            "%s holds a fractional quantity (%s); the bot accounts for %d whole "
+            "share(s). Fractions are outside its position model — keep such "
+            "holdings in config.protected_tickers.",
+            symbol, quantity, whole,
+        )
+    return max(0, whole)
 
 
 def _whole_quantity(value: Any, field: str) -> int:

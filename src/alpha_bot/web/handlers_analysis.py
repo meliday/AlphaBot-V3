@@ -106,7 +106,7 @@ def handle_queue(body: dict[str, Any], serialise: Any) -> dict[str, Any] | tuple
     if report.signal not in {"Buy", "Strong Buy"}:
         return (f"신호가 {report.signal}여서 큐잉할 수 없습니다.", 400)
 
-    queue = ApprovalQueue(config.approval_queue)
+    queue = ApprovalQueue(config.approval_queue, protected_tickers=config.protected_tickers)
     order = queue.enqueue(
         OrderRequest(
             ticker=report.ticker,

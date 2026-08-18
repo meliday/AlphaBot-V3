@@ -158,9 +158,20 @@ def _merge_fill(order: OrderCandidate, fill: OrderFill) -> OrderCandidate:
 
 
 class ApprovalQueue:
-    def __init__(self, path: Path = Path("pending_orders.json")):
+    def __init__(
+        self,
+        path: Path = Path("pending_orders.json"),
+        *,
+        protected_tickers: frozenset[str] | set[str] | None = None,
+    ):
         self.path = path
         self._lock = _lock_for(path)
+        # Enforced here rather than only at the callers because every order
+        # the bot can ever place — auto sweep, CLI, web, forced exit, exit
+        # ladder — funnels through enqueue(). One check covers them all.
+        self.protected_tickers = frozenset(
+            t.upper() for t in (protected_tickers or ())
+        )
 
     def enqueue(
         self,
@@ -174,6 +185,12 @@ class ApprovalQueue:
     ) -> OrderCandidate:
         if request.quantity <= 0:
             raise ApprovalError("Cannot enqueue an order with quantity <= 0.")
+        if request.ticker.upper() in self.protected_tickers:
+            raise ApprovalError(
+                f"{request.ticker.upper()} is a protected holding — the bot must "
+                f"not {request.side} it. Remove it from protected_tickers in "
+                "config.yaml if that is genuinely intended."
+            )
         if broker is not None and hasattr(broker, "normalize_order"):
             request = broker.normalize_order(request)  # type: ignore[attr-defined]
         if request.order_type == "limit" and request.limit_price is None:

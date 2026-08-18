@@ -70,7 +70,7 @@ def run_auto_iteration(
     provider = make_provider(opts.source, config.data_dir)
     from alpha_bot.strategy import analyzer_from_config
     analyzer = analyzer_from_config(config)
-    queue = ApprovalQueue(config.approval_queue)
+    queue = ApprovalQueue(config.approval_queue, protected_tickers=config.protected_tickers)
     broker = make_broker(opts.broker_name)
 
     try:
@@ -131,6 +131,7 @@ def run_auto_iteration(
         manage_open_positions(
             queue, broker, provider, say,
             protective_stops=config.protective_stop,
+            protected_tickers=config.protected_tickers,
         )
     except Exception as exc:
         logger.exception("Position management failed")
@@ -190,6 +191,8 @@ def run_auto_iteration(
 
     rows = load_watchlist(opts.watchlist)
     cooldown = timedelta(hours=opts.cooldown_hours)
+    if config.protected_tickers:
+        say(f"🔒 보호 종목 (봇 매매 제외): {', '.join(sorted(config.protected_tickers))}")
 
     market_cache: dict[str, bool] = {}
     regime_cache: dict[str, bool] = {}
@@ -203,6 +206,12 @@ def run_auto_iteration(
             market = validate_market(row["market"])
         except ValueError as exc:
             say(f"⚠️ {ticker}: {exc}")
+            continue
+
+        if ticker.upper() in config.protected_tickers:
+            # Skipped before analysis so protected names cost no API calls
+            # and never even produce a signal to be tempted by.
+            say(f"[{market}:{ticker}] 🔒 보호 종목 — 봇 매매 대상 아님")
             continue
 
         if market not in market_cache:

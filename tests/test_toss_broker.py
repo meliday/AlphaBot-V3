@@ -309,11 +309,29 @@ class TossTokenAndAccountTests(unittest.TestCase):
         self.assertEqual(balance.securities_value, 550.0)
         self.assertEqual(balance.total_value, 1550.0)
 
-    def test_fractional_holding_fails_closed_instead_of_truncating(self):
+    def test_a_sub_share_holding_reads_as_zero_rather_than_raising(self):
+        # Superseded behaviour: get_positions used to raise on any fraction.
+        # Live accounts hold fractional DCA shares, and both callers swallow
+        # exceptions — so failing closed here did not protect anything, it
+        # silently disabled queue-vs-broker reconciliation AND the pre-sell
+        # "does the broker actually hold this?" check. Flooring is safe for
+        # both uses: >0 still means held, and the floor is the largest
+        # quantity guaranteed to exist, so the bot can never oversell.
         client = FakeTossClient()
         client.holding_quantity = "0.5"
+        self.assertEqual(make_broker(client).get_positions("US"), [])
+
+    def test_a_fractional_holding_above_one_share_is_floored(self):
+        client = FakeTossClient()
+        client.holding_quantity = "5.9"
+        positions = make_broker(client).get_positions("US")
+        self.assertEqual(positions[0].quantity, 5)
+
+    def test_placing_a_fractional_order_is_still_refused(self):
+        # The strict guard remains where it belongs: the order path.
+        from alpha_bot.broker.toss import _whole_quantity
         with self.assertRaises(BrokerError):
-            make_broker(client).get_positions("US")
+            _whole_quantity("1.5", "order quantity")
 
 
 class FakeTossPriceClient:

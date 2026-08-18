@@ -497,6 +497,7 @@ def manage_open_positions(
     say: Callable[[str], None],
     *,
     protective_stops: bool = False,
+    protected_tickers: frozenset[str] | set[str] | None = None,
 ) -> None:
     """For each filled buy without a completed exit, walk the exit ladder:
 
@@ -513,6 +514,7 @@ def manage_open_positions(
     bot-initiated sell releases the venue stop first.
     """
 
+    protected = frozenset(t.upper() for t in (protected_tickers or ()))
     orders = queue.list_orders()
     by_id = {o.id: o for o in orders}
     candle_cache: dict[tuple[str, str], list] = {}
@@ -540,6 +542,11 @@ def manage_open_positions(
 
     for buy in orders:
         if buy.request.side != "buy":
+            continue
+        if buy.request.ticker.upper() in protected:
+            # Defence in depth: enqueue() already refuses protected tickers,
+            # so a row here means pre-existing history or a config change
+            # after the fact. Either way the bot must not sell it.
             continue
         if not order_belongs_to_broker(buy, broker):
             continue

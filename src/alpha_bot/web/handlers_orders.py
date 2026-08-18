@@ -23,7 +23,9 @@ def handle_approve(body: dict[str, str], serialise: Any) -> dict[str, Any]:
     broker_name = body.get("broker", "mock")
     config = load_config(CONFIG_PATH)
     broker = make_broker(broker_name)
-    updated, result = ApprovalQueue(config.approval_queue).approve(order_id, broker)
+    updated, result = ApprovalQueue(
+        config.approval_queue, protected_tickers=config.protected_tickers
+    ).approve(order_id, broker)
     return {
         "order": serialise(updated),
         "result": serialise(result),

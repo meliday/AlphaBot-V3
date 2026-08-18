@@ -14,5 +14,11 @@ stale_order_minutes: 60     # cancel unfilled limit orders older than this (0 = 
 protective_stop: false      # mirror the effective stop as a broker-side conditional
                             # order so held positions survive bot downtime.
                             # Toss only; enabling places real standing orders.
+# ── Protected holdings ──
+# Tickers the bot must never buy, sell, or arm a stop on — long-term/DCA
+# positions sharing the account. Blocked at enqueue(), so no code path
+# (auto, CLI, web) can trade them. Comma-separated.
+protected_tickers:           # e.g. VOO, QQQM, BRK.B
+
 # ── Entry style ──
 require_breakout: false     # true = only buy fresh pivot breaks on 1.4x volume (Minervini strict)

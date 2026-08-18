@@ -179,7 +179,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     print(render_report(report))
 
     if args.queue_order and report.signal in {"Buy", "Strong Buy"}:
-        queue = ApprovalQueue(config.approval_queue)
+        queue = ApprovalQueue(config.approval_queue, protected_tickers=config.protected_tickers)
         order = queue.enqueue(
             OrderRequest(
                 ticker=report.ticker,
@@ -227,7 +227,10 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
 def cmd_pending(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config))
-    queue = ApprovalQueue(Path(args.queue) if args.queue else config.approval_queue)
+    queue = ApprovalQueue(
+        Path(args.queue) if args.queue else config.approval_queue,
+        protected_tickers=config.protected_tickers,
+    )
     orders = queue.list_orders()
     if not orders:
         print("No queued orders.")
@@ -246,7 +249,10 @@ def cmd_approve(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config))
     broker_name = args.broker or config.broker
     broker = make_broker(broker_name)
-    queue = ApprovalQueue(Path(args.queue) if args.queue else config.approval_queue)
+    queue = ApprovalQueue(
+        Path(args.queue) if args.queue else config.approval_queue,
+        protected_tickers=config.protected_tickers,
+    )
     order, result = queue.approve(args.order_id, broker)
     logger.info("Order %s approved via %s: %s", order.id, broker_name, result.message)
     print(f"{order.id} -> {order.status}: {result.message} ({result.broker_order_id})")
@@ -314,13 +320,14 @@ def cmd_monitor(args: argparse.Namespace) -> int:
         provider = make_provider("toss", config.data_dir)
     else:
         provider = _provider(args, config.data_dir)
-    queue = ApprovalQueue(config.approval_queue)
+    queue = ApprovalQueue(config.approval_queue, protected_tickers=config.protected_tickers)
     broker = make_broker(broker_name)
 
     from alpha_bot.auto.live_monitor import LiveExitMonitor
     monitor = LiveExitMonitor(
         queue, broker, provider, say=print,
         protective_stops=config.protective_stop,
+        protected_tickers=config.protected_tickers,
     )
     stream = None
     watch: set[str] = set()

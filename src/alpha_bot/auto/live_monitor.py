@@ -170,10 +170,12 @@ class LiveExitMonitor:
         candle_ttl: float = 300.0,
         say: Callable[[str], None] = print,
         protective_stops: bool = False,
+        protected_tickers: frozenset[str] | set[str] | None = None,
     ):
         self.queue = queue
         self.broker = broker
         self.protective_stops = protective_stops
+        self.protected_tickers = frozenset(t.upper() for t in (protected_tickers or ()))
         self.prices = TickPriceCache()
         self.provider = StreamPricedProvider(provider, self.prices, candle_ttl=candle_ttl)
         self.say = say
@@ -210,6 +212,7 @@ class LiveExitMonitor:
         manage_open_positions(
             self.queue, self.broker, self.provider, self.say,
             protective_stops=self.protective_stops,
+            protected_tickers=self.protected_tickers,
         )
         return True
 
@@ -229,6 +232,7 @@ class LiveExitMonitor:
         manage_open_positions(
             self.queue, self.broker, self.provider, self.say,
             protective_stops=self.protective_stops,
+            protected_tickers=self.protected_tickers,
         )
         return True
 

@@ -57,6 +57,11 @@ class AppConfig:
     # enabling it makes the bot place real standing orders at the venue, and
     # only brokers implementing ProtectiveStopBroker (Toss) honour it.
     protective_stop: bool = False
+    # Tickers the bot must never touch — no buys, no exits, no protective
+    # stops. For long-term/DCA holdings that share the brokerage account:
+    # the bot's whole position model assumes it opened what it manages, and
+    # these were opened by the operator on a different thesis entirely.
+    protected_tickers: frozenset[str] = frozenset()
 
 
 def load_dotenv(path: Path = Path(".env")) -> None:
@@ -114,7 +119,25 @@ def load_config(path: Path = Path("config.yaml")) -> AppConfig:
         stale_order_minutes=int(values.get("stale_order_minutes", 60)),
         require_breakout=bool(values.get("require_breakout", False)),
         protective_stop=bool(values.get("protective_stop", False)),
+        protected_tickers=_parse_tickers(values.get("protected_tickers")),
     )
+
+
+def _parse_tickers(value: Any) -> frozenset[str]:
+    """Parse ``protected_tickers`` from the simple YAML parser's output.
+
+    Accepts a comma- or space-separated string (the parser never produces
+    lists). Normalised to upper case so "brk.b" and "BRK.B" are the same
+    holding; dots and hyphens are preserved because venues use them.
+    """
+
+    if value is None:
+        return frozenset()
+    if isinstance(value, (list, tuple, set, frozenset)):
+        parts = [str(v) for v in value]
+    else:
+        parts = str(value).replace(",", " ").split()
+    return frozenset(p.strip().upper() for p in parts if p.strip())
 
 
 def load_watchlist(path: Path) -> list[dict[str, str]]:

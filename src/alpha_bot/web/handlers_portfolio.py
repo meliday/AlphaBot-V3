@@ -19,7 +19,7 @@ CONFIG_PATH = Path("config.yaml")
 
 def handle_portfolio(serialise: Any) -> dict[str, Any]:
     config = load_config(CONFIG_PATH)
-    queue = ApprovalQueue(config.approval_queue)
+    queue = ApprovalQueue(config.approval_queue, protected_tickers=config.protected_tickers)
     orders = queue.list_orders()
     by_id = {o.id: o for o in orders}
 
@@ -132,7 +132,7 @@ def handle_bot_holdings(params: dict[str, str]) -> dict[str, Any]:
     appear here — those should be viewed via /api/account.
     """
     config = load_config(CONFIG_PATH)
-    queue = ApprovalQueue(config.approval_queue)
+    queue = ApprovalQueue(config.approval_queue, protected_tickers=config.protected_tickers)
     orders = queue.list_orders()
     by_id = {o.id: o for o in orders}
 
