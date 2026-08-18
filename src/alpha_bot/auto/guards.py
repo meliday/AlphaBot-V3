@@ -156,13 +156,20 @@ def daily_loss_exceeded(
     except Exception as exc:
         logger.warning("Daily-loss check: balance query failed for %s: %s", market, exc)
         return False, ""
-    total = balance.total_value
+    # Same denominator as position sizing (FX-unified portfolio when the
+    # broker can price it, else the sleeve). Positions are sized as a % of
+    # this base, so losses must be measured against it too: with a sleeve
+    # denominator, an account holding 10% of its value in USD would trip the
+    # 3% breaker on a single normally-sized (1%-of-portfolio) stop-out and
+    # freeze that market for the day.
+    from alpha_bot.auto.sizing import sizing_base_value
+    total, base_label = sizing_base_value(broker, balance)
     if total <= 0:
         return False, ""
     loss_pct = -pnl / total * 100.0
     if loss_pct >= limit_pct:
         return True, (
             f"오늘 실현손실 {-pnl:,.0f}{balance.currency} "
-            f"({loss_pct:.2f}% ≥ 한도 {limit_pct:.2f}%)"
+            f"({base_label} 대비 {loss_pct:.2f}% ≥ 한도 {limit_pct:.2f}%)"
         )
     return False, ""

@@ -251,3 +251,40 @@ class NotifyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PortfolioBreakerTests(unittest.TestCase):
+    """The breaker measures losses against the same base sizing uses.
+
+    Positions are sized as a % of the FX-unified portfolio; measuring the
+    loss against the (possibly much smaller) sleeve would trip the breaker
+    on a single normally-sized stop-out whenever most of the account sits
+    in the other currency.
+    """
+
+    class PortfolioMock(MockBroker):
+        portfolio = 100_000.0
+
+        def portfolio_value(self, currency: str) -> float:
+            return self.portfolio
+
+    def _round_trip(self, tmp, portfolio: float):
+        queue, _ = _filled_round_trip(tmp, 100.0, 90.0, 10)  # -100 realized
+        broker = self.PortfolioMock(Path(tmp) / "l2.json", Path(tmp) / "s2.json")
+        broker.portfolio = portfolio
+        return queue, broker
+
+    def test_a_normal_stop_out_does_not_trip_against_the_portfolio(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # -100 on a 100k portfolio = 0.1%; the sleeve alone (10k mock
+            # default) would have read it as 1% and tripped at limit 1.0.
+            queue, broker = self._round_trip(tmp, portfolio=100_000.0)
+            tripped, _ = daily_loss_exceeded(queue, broker, "US", limit_pct=1.0)
+            self.assertFalse(tripped)
+
+    def test_portfolio_scale_losses_still_trip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            queue, broker = self._round_trip(tmp, portfolio=2_000.0)  # -100 = 5%
+            tripped, detail = daily_loss_exceeded(queue, broker, "US", limit_pct=3.0)
+            self.assertTrue(tripped)
+            self.assertIn("통합자산", detail)
