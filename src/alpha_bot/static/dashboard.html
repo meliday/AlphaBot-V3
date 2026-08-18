@@ -742,6 +742,13 @@
       </div>
     </div>
 
+    <!-- ── Ops layout: positions + feed on the left, gates on the right ──
+         The gate panel is the point of this arrangement. "Why isn't it
+         buying?" used to be answerable only by watching log lines scroll
+         past; here the live answer sits permanently beside the feed. -->
+    <div class="grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-5 items-start">
+    <div class="space-y-5 min-w-0">
+
     <!-- Bot holdings grid -->
     <div class="space-y-3">
       <div class="flex items-baseline justify-between">
@@ -773,6 +780,26 @@
         </div>
       </div>
     </div>
+
+    </div><!-- /left column -->
+
+    <!-- ── Gate panel: why the bot is (not) buying ── -->
+    <aside class="card space-y-4 xl:sticky xl:top-28">
+      <div class="flex items-baseline justify-between">
+        <h2 class="text-sm uppercase tracking-widest font-bold text-subtext">진입 게이트</h2>
+        <button onclick="loadGates()" class="btn btn-ghost text-xs">
+          <i class="ph-bold ph-arrows-clockwise"></i>
+        </button>
+      </div>
+      <div id="gateCapacity" class="text-sm"></div>
+      <div id="gateMarkets" class="space-y-3"></div>
+      <div>
+        <div class="text-xs uppercase tracking-wider font-bold text-subtext mb-2">종목별</div>
+        <div id="gateTickers" class="space-y-1 text-sm"></div>
+      </div>
+    </aside>
+
+    </div><!-- /ops grid -->
 
     <!-- Collapsible settings drawer -->
     <details id="mcSettings" class="mc-drawer">
@@ -1212,7 +1239,7 @@ function go(tab) {
   document.querySelectorAll('.nav-link').forEach(a => a.classList.toggle('active', a.dataset.tab === tab));
   if (tab === 'orders')    loadOrders();
   if (tab === 'settings')  loadSettings();
-  if (tab === 'auto')      { loadAutoSettings(); pollAuto(); loadBotHoldings(); loadBotStats(); _mcStartCountdown(_mcSavedInterval()); }
+  if (tab === 'auto')      { loadAutoSettings(); pollAuto(); loadBotHoldings(); loadBotStats(); loadGates(); _mcStartCountdown(_mcSavedInterval()); }
   if (tab === 'mock')      loadMockState();
   if (tab === 'scan')      { loadWatchlists($('sFile')); loadQuotes(); }
   if (tab === 'account')   loadAccount();
@@ -2038,6 +2065,15 @@ function _mcPositionCard(p) {
   const exitBadge = p.has_active_exit
     ? '<span class="chip bg-warnSoft text-warn text-xs">매도 진행 중</span>'
     : '';
+  // Venue-side stop. Three distinct states on purpose: armed (the broker
+  // will sell without us), pending (create sent, id unconfirmed — neither
+  // safe nor known-unprotected), and none (polling-only protection, which
+  // dies with the bot process). Never collapse pending into either.
+  const stopBadge = p.protective_stop_id
+    ? `<span class="chip bg-emerald-50 text-emerald-700 text-xs" title="브로커가 감시 중 — 봇이 꺼져도 발동">🛡️ ${fmt(p.protective_stop_price)}</span>`
+    : p.protective_stop_pending
+      ? '<span class="chip bg-amber-50 text-amber-700 text-xs" title="조건주문 등록 결과 미확인 — 다음 사이클에 복구 시도">🛡️ 확인중</span>'
+      : '<span class="chip bg-slate-100 text-subtext text-xs" title="브로커 측 손절 없음 — 봇이 켜져 있을 때만 보호됩니다">🛡️ 미무장</span>';
   const brokerChip = p.broker === 'toss'
     ? '<span class="chip bg-tossblue text-white text-xs">Toss</span>'
     : p.broker === 'kis'
@@ -2061,6 +2097,7 @@ function _mcPositionCard(p) {
         <div class="flex items-center gap-2 min-w-0">
           <span class="font-extrabold text-lg">${escapeHtml(p.ticker)}</span>
           ${brokerChip}
+          ${stopBadge}
           ${exitBadge}
         </div>
         <div class="text-right shrink-0">
@@ -2808,6 +2845,75 @@ function renderLogRecords(records, total) {
 
 // ──────────────────────────────────────────────────────────
 // ──────────────────────────────────────────────────────────
+// Gate panel — the live answer to "why isn't it buying?"
+// Mirrors run_auto_iteration's guard order, so the panel explains the
+// real decision path. Polled on a slow beat: the regime and breaker
+// probes reach the network (both cached server-side, but still).
+// ──────────────────────────────────────────────────────────
+function gateRow(label, ok, detail) {
+  // null = could not read. Rendered amber like a block, never green —
+  // an unverified gate is not a passed gate.
+  const tone = ok == null ? 'text-amber-600'
+             : ok ? 'text-emerald-600' : 'text-rose-600';
+  const icon = ok == null ? 'ph-question'
+             : ok ? 'ph-fill ph-check-circle' : 'ph-fill ph-x-circle';
+  return `<div class="flex items-start gap-2">
+    <i class="ph ${icon} ${tone} mt-0.5"></i>
+    <div class="min-w-0">
+      <div class="font-semibold">${label}</div>
+      <div class="text-xs text-subtext break-words">${detail || ''}</div>
+    </div>
+  </div>`;
+}
+
+function renderGates(d) {
+  if (!d) {
+    $('gateCapacity').innerHTML = '<span class="text-subtext">게이트 상태를 불러오지 못했습니다</span>';
+    $('gateMarkets').innerHTML = '';
+    $('gateTickers').innerHTML = '';
+    return;
+  }
+
+  const cap = d.capacity || {};
+  const capFull = cap.full === true;
+  $('gateCapacity').innerHTML = gateRow(
+    '포지션 여유',
+    cap.full == null ? null : !capFull,
+    cap.open == null ? '확인 실패' : `보유·대기 ${cap.open} / 상한 ${cap.max}`
+  );
+
+  $('gateMarkets').innerHTML = Object.entries(d.markets || {}).map(([market, g]) => `
+    <div class="border-t border-border pt-3 space-y-2">
+      <div class="text-xs font-bold text-subtext">${market}</div>
+      ${gateRow('장 운영', g.session?.open, g.session?.reason)}
+      ${gateRow('시장 레짐', g.regime?.bullish, g.regime?.reason)}
+      ${gateRow('손실 브레이커',
+        g.breaker?.tripped == null ? null : !g.breaker.tripped,
+        g.breaker?.tripped ? g.breaker.detail : '한도 내')}
+      ${gateRow('가용 현금',
+        g.cash?.available == null ? null : g.cash.available > 0,
+        g.cash?.available == null ? '확인 실패'
+          : `${g.cash.available.toLocaleString()} ${g.cash.currency}`)}
+    </div>`).join('');
+
+  const tickers = d.tickers || [];
+  $('gateTickers').innerHTML = tickers.length ? tickers.map(t => {
+    const open = !t.blocked_by;
+    return `<div class="flex items-center justify-between gap-2">
+      <span class="font-semibold ${open ? '' : 'text-mute'}">${t.ticker}</span>
+      <span class="text-xs ${open ? 'text-emerald-600' : 'text-subtext'} truncate">
+        ${open ? '진입 가능' : t.blocked_by}
+      </span>
+    </div>`;
+  }).join('') : '<div class="text-xs text-subtext">워치리스트가 비어 있습니다</div>';
+}
+
+async function loadGates() {
+  try { renderGates(await api('GET', '/api/gates')); }
+  catch (e) { renderGates(null); }
+}
+
+// ──────────────────────────────────────────────────────────
 // Safety bar
 // One /api/safety poll drives the whole bar. Rendering rules that
 // matter: null means "could not read", which must look like a warning
@@ -2886,7 +2992,14 @@ loadWatchlists($('sFile'));
 loadWatchlists($('autoFile'));
 pollSafety();
 setInterval(pollSafety, 5000);
-go('analyze');
+// Gates are only meaningful on the ops screen, and cost network probes —
+// refresh on a slow beat and only while that page is visible.
+setInterval(() => {
+  if (!$('page-auto').classList.contains('hidden')) loadGates();
+}, 30000);
+// Ops is the landing page: with real money at a real venue the first
+// question is "what is happening right now", not "what should I analyse".
+go('auto');
 </script>
 </body>
 </html>

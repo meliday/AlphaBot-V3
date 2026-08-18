@@ -90,6 +90,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/api/bot/stats": lambda: self._dispatch(_portfolio.handle_bot_stats()),
             "/api/mock/state": lambda: self._dispatch(_mock.handle_mock_state()),
             "/api/safety": lambda: self._dispatch(_safety.handle_safety()),
+            "/api/gates": lambda: self._dispatch(_safety.handle_gates()),
         }
         handler = routes.get(path)
         if handler:

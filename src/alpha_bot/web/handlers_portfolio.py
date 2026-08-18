@@ -160,6 +160,15 @@ def handle_bot_holdings(params: dict[str, str]) -> dict[str, Any]:
             "target1": o.target1,
             "target2": o.target2,
             "trail_stop": o.trail_stop,
+            # Venue-side stop state. A position counts as protected only when
+            # the broker holds a live conditional order, so a pending intent
+            # (create sent, id not yet confirmed) must stay visibly distinct
+            # from armed rather than rendering as either safe or unprotected.
+            "protective_stop_id": o.protective_stop_id,
+            "protective_stop_price": o.protective_stop_price,
+            "protective_stop_pending": (
+                o.protective_stop_id is None and o.protective_stop_quantity > 0
+            ),
             "t1_taken": _has_completed_scale_out(o, by_id),
             "order_id": o.id,
             "broker": o.broker,

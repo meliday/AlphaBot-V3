@@ -32,6 +32,10 @@ from alpha_bot.strategy.indicators import (
 logger = logging.getLogger(__name__)
 
 
+class _SkipAudit(Exception):
+    """Control-flow marker: this analysis is a replay, not a live decision."""
+
+
 # ── Strategy Parameters ──────────────────────────────────────────────
 # All "magic numbers" that were previously hardcoded throughout the
 # scoring logic are gathered here for transparency and easy tuning.
@@ -237,7 +241,14 @@ class StrategyAnalyzer:
             "%s:%s → %s (score=%d/30, rr=%.2f:1)",
             market, ticker, signal, scoreboard.total, trade_plan.rr_ratio,
         )
+        # Audit logging records what the LIVE bot decided. A backtest or
+        # parameter study replays analyze() thousands of times per run —
+        # a single A/B session wrote 78k rows (20.9MB) and swamped the
+        # dashboard's "today" counters with offline noise. use_live_market_data
+        # is already the live-vs-replay discriminator, so reuse it here.
         try:
+            if not use_live_market_data:
+                raise _SkipAudit
             from alpha_bot.audit_log import log_query
             na = news_assessment
             log_query(
@@ -250,6 +261,8 @@ class StrategyAnalyzer:
                 news_sentiment=na.sentiment if na else None,
                 news_adjustment=na.score_adjustment if na else None,
             )
+        except _SkipAudit:
+            pass
         except Exception:
             pass
 

@@ -231,3 +231,144 @@ def _overall(state: dict[str, Any]) -> dict[str, Any]:
     if warn:
         return {"level": "warn", "reasons": warn}
     return {"level": "ok", "reasons": []}
+
+
+# ── Gates: "why isn't the bot buying anything?" ──────────────────────
+#
+# The single most common question about a running bot, and until now it
+# was answerable only by reading log lines as they scrolled past. Each
+# check below mirrors an actual guard in run_auto_iteration, in the same
+# order, so the panel explains the real decision path rather than an
+# approximation of it.
+#
+# Costlier than /api/safety (regime and breaker probes hit the network,
+# though both sit behind caches), so the UI polls it on a slower beat.
+
+def handle_gates() -> dict[str, Any]:
+    from alpha_bot.config import load_watchlist
+
+    config = load_config(CONFIG_PATH)
+    queue = ApprovalQueue(
+        config.approval_queue, protected_tickers=config.protected_tickers
+    )
+
+    watchlist_path = Path("watchlist.yaml")
+    rows = _probe(
+        "watchlist",
+        lambda: load_watchlist(watchlist_path) if watchlist_path.exists() else [],
+        [],
+    )
+
+    result: dict[str, Any] = {
+        "watchlist_file": str(watchlist_path) if watchlist_path.exists() else None,
+        "max_positions": config.max_positions,
+    }
+
+    # ── Capacity (queue-only, always answerable) ──
+    def capacity() -> dict[str, Any]:
+        from alpha_bot.auto.position_manager import count_open_positions
+        open_count = count_open_positions(queue)
+        return {
+            "open": open_count,
+            "max": config.max_positions,
+            "full": open_count >= config.max_positions,
+        }
+
+    result["capacity"] = _probe(
+        "capacity", capacity,
+        {"open": None, "max": config.max_positions, "full": None},
+    )
+
+    markets = sorted({str(r.get("market", "US")).upper() for r in rows}) or ["US"]
+
+    def market_gates() -> dict[str, Any]:
+        from alpha_bot.auto.analysis import make_broker
+        from alpha_bot.auto.guards import daily_loss_exceeded
+        from alpha_bot.auto.sizing import usable_cash
+        from alpha_bot.market_hours import market_status
+        from alpha_bot.market_regime import get_regime
+
+        broker = _probe("gates_broker", lambda: make_broker(config.broker))
+        out: dict[str, Any] = {}
+        for market in markets:
+            entry: dict[str, Any] = {}
+
+            status = _probe(f"session:{market}", lambda m=market: market_status(m))
+            entry["session"] = (
+                {"open": status.is_open, "reason": status.reason}
+                if status else {"open": None, "reason": "확인 실패"}
+            )
+
+            regime = _probe(f"regime:{market}", lambda m=market: get_regime(m))
+            entry["regime"] = (
+                {"bullish": regime.is_bullish, "reason": regime.reason}
+                if regime else {"bullish": None, "reason": "확인 실패"}
+            )
+
+            if broker is not None:
+                breaker = _probe(
+                    f"breaker:{market}",
+                    lambda m=market: daily_loss_exceeded(
+                        queue, broker, m, config.daily_loss_limit_pct
+                    ),
+                )
+                entry["breaker"] = (
+                    {"tripped": breaker[0], "detail": breaker[1]}
+                    if breaker else {"tripped": None, "detail": "확인 실패"}
+                )
+                balance = _probe(
+                    f"cash:{market}", lambda m=market: broker.get_cash_balance(m)
+                )
+                entry["cash"] = (
+                    {"available": round(usable_cash(balance), 2),
+                     "currency": balance.currency}
+                    if balance else {"available": None, "currency": ""}
+                )
+            else:
+                entry["breaker"] = {"tripped": None, "detail": "브로커 없음"}
+                entry["cash"] = {"available": None, "currency": ""}
+
+            out[market] = entry
+        return out
+
+    result["markets"] = _probe("market_gates", market_gates, {})
+
+    # ── Per-ticker blockers, in the order the sweep applies them ──
+    def tickers() -> list[dict[str, Any]]:
+        from alpha_bot.auto.position_manager import find_held_buy
+
+        gates = result.get("markets") or {}
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            ticker = str(row.get("ticker", "")).upper()
+            market = str(row.get("market", "US")).upper()
+            gate = gates.get(market) or {}
+            blocked: str | None = None
+
+            if ticker in config.protected_tickers:
+                blocked = "보호 종목"
+            elif (result.get("capacity") or {}).get("full"):
+                blocked = "포지션 상한 도달"
+            elif gate.get("session", {}).get("open") is False:
+                blocked = "장 마감"
+            elif gate.get("regime", {}).get("bullish") is False:
+                blocked = "시장 레짐 약세"
+            elif gate.get("breaker", {}).get("tripped"):
+                blocked = "일일손실 한도"
+            else:
+                held = _probe(
+                    f"held:{ticker}",
+                    lambda t=ticker, m=market: find_held_buy(queue, m, t),
+                )
+                if held is not None:
+                    blocked = "이미 보유/주문중"
+
+            out.append({
+                "ticker": ticker, "market": market,
+                "company": row.get("company", ticker),
+                "blocked_by": blocked,
+            })
+        return out
+
+    result["tickers"] = _probe("tickers", tickers, [])
+    return result

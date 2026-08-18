@@ -157,5 +157,63 @@ class HeartbeatProbeTests(unittest.TestCase):
             self.assertEqual(auto["detail"], "ok")
             self.assertIsNotNone(auto["age_seconds"])
 
+
+class GateTests(unittest.TestCase):
+    """The gate panel must mirror run_auto_iteration's real guard order.
+
+    If it drifts, the dashboard confidently explains a decision path the
+    bot does not actually follow — worse than showing nothing.
+    """
+
+    def _gates(self, tmp: str, watchlist: str, **config_kw):
+        from alpha_bot.config import AppConfig
+        from alpha_bot.web import handlers_safety
+
+        (Path(tmp) / "watchlist.yaml").write_text(watchlist, encoding="utf-8")
+        config = AppConfig(approval_queue=Path(tmp) / "pending.json", **config_kw)
+        with patch("alpha_bot.web.handlers_safety.load_config", return_value=config), \
+             patch.object(handlers_safety, "Path", Path), \
+             patch("alpha_bot.auto.analysis.make_broker",
+                   side_effect=RuntimeError("no broker in tests")):
+            import os
+            cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                return handlers_safety.handle_gates()
+            finally:
+                os.chdir(cwd)
+
+    def test_protected_tickers_report_their_block_reason(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self._gates(
+                tmp,
+                "universe:\n  - ticker: VOO\n    market: US\n"
+                "  - ticker: NVDA\n    market: US\n",
+                protected_tickers=frozenset({"VOO"}),
+            )
+            blocked = {t["ticker"]: t["blocked_by"] for t in payload["tickers"]}
+            self.assertEqual(blocked["VOO"], "보호 종목")
+            self.assertIsNone(blocked["NVDA"])
+
+    def test_capacity_reflects_the_position_cap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self._gates(
+                tmp, "universe:\n  - ticker: NVDA\n    market: US\n",
+                max_positions=3,
+            )
+            self.assertEqual(payload["capacity"]["max"], 3)
+            self.assertFalse(payload["capacity"]["full"])
+
+    def test_a_broker_outage_degrades_fields_without_raising(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self._gates(
+                tmp, "universe:\n  - ticker: NVDA\n    market: US\n"
+            )
+            us = payload["markets"]["US"]
+            self.assertIsNone(us["breaker"]["tripped"])
+            self.assertIsNone(us["cash"]["available"])
+            # Unknown gates must not read as passed.
+            self.assertIn(us["breaker"]["detail"], {"브로커 없음", "확인 실패"})
+
 if __name__ == "__main__":
     unittest.main()
