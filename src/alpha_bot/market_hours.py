@@ -1,9 +1,12 @@
 """Market hours and holiday gate.
 
 Skips auto-trading work when the relevant exchange is closed (weekends,
-public holidays, before-open / after-close). Holiday lists are baked in
-for the current and following year; extend ``_HOLIDAYS`` in-place as
-each new calendar drops, or override via ``config.yaml``.
+public holidays, before-open / after-close).
+
+Two sources, in order: the venue's own calendar (see :mod:`market_calendar`)
+when Toss credentials are configured, then the baked-in ``_HOLIDAYS`` table
+below. The table remains the fallback and still fails closed on any year
+nobody has verified — extend it in-place as each official calendar drops.
 
 Time windows (local exchange time, holiday-adjusted):
   KR (KOSPI/KOSDAQ):  09:00 – 15:30 KST, Mon–Fri
@@ -12,12 +15,15 @@ Time windows (local exchange time, holiday-adjusted):
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Iterable
 from zoneinfo import ZoneInfo
 
 from alpha_bot.models import Market
+
+logger = logging.getLogger(__name__)
 
 _KST = ZoneInfo("Asia/Seoul")
 _ET = ZoneInfo("America/New_York")
@@ -103,17 +109,81 @@ def _open_window(market: Market, session_date: date | None = None) -> tuple[time
     return time(9, 30), close
 
 
+def _status_from_venue_calendar(
+    market: Market, moment: datetime, holidays: set[date]
+) -> MarketStatus | None:
+    """Answer from the venue calendar, or None if it cannot say.
+
+    Preferred over the local table because it needs no annual upkeep and
+    already encodes partial closures and early closes. Returns None on any
+    doubt so the caller falls back rather than trading on a guess.
+    """
+
+    from alpha_bot import market_calendar
+
+    try:
+        sessions = market_calendar.get_sessions(market, now=moment)
+    except Exception as exc:
+        # market_status gates every sweep, every exit check and every entry.
+        # A calendar problem must degrade to the local table, never propagate.
+        logger.warning("Venue calendar lookup failed for %s: %s", market, exc)
+        return None
+    if sessions is None:
+        return None
+
+    tz = _market_zone(market)
+    local = moment.astimezone(tz)
+    # Operator-supplied closures still win: they exist to express knowledge
+    # the venue calendar does not carry (e.g. a broker-side outage).
+    if local.date() in holidays:
+        return MarketStatus(
+            market, False, "공휴일 휴장 (수동 지정)",
+            next_open=market_calendar.next_session_start(market, moment),
+        )
+
+    current = next((w for w in sessions if w.contains(moment)), None)
+    if current is not None:
+        return MarketStatus(
+            market, True, f"장중 (거래소 캘린더, 현지 {local.strftime('%H:%M')})"
+        )
+    upcoming = market_calendar.next_session_start(market, moment)
+    if upcoming is None:
+        # Inside the covered range but past every known session — the cached
+        # 3-day window has gone stale. Defer to the local table.
+        return None
+    reason = (
+        "개장 전" if upcoming.astimezone(tz).date() == local.date() else "장 마감"
+    )
+    return MarketStatus(
+        market, False,
+        f"{reason} (거래소 캘린더, 현지 {local.strftime('%H:%M')})",
+        next_open=upcoming,
+    )
+
+
 def market_status(
     market: Market,
     *,
     now: datetime | None = None,
     extra_holidays: Iterable[date] = (),
+    use_venue_calendar: bool = True,
 ) -> MarketStatus:
-    """Return whether ``market`` is currently open for trading."""
+    """Return whether ``market`` is currently open for trading.
+
+    Consults the venue calendar first (no annual maintenance, knows about
+    early closes), and falls back to the baked-in holiday table whenever the
+    venue cannot answer.
+    """
 
     tz = _market_zone(market)
     moment = (now or datetime.now(tz)).astimezone(tz)
     today_local = moment.date()
+    if use_venue_calendar:
+        venue = _status_from_venue_calendar(
+            market, moment, _HOLIDAYS.get(market, set()) | set(extra_holidays)
+        )
+        if venue is not None:
+            return venue
     if today_local.year not in _COMPLETE_HOLIDAY_YEARS.get(market, set()):
         return MarketStatus(
             market,
