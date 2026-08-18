@@ -1010,6 +1010,21 @@
       <p class="mt-2 text-subtext text-sm">계좌 조회 중...</p>
     </div>
 
+    <!-- ── Reconciliation: bot belief vs venue truth ──
+         First-class because nearly every defect found taking this bot
+         live hid in that gap. Holdings are classified (bot / protected /
+         manual) rather than listed, and quantities show the venue's real
+         fractional value — the bot's whole-share model would otherwise
+         make sub-share DCA positions vanish from the screen entirely. -->
+    <div class="card space-y-4">
+      <div class="flex items-baseline justify-between">
+        <h2 class="text-sm uppercase tracking-widest font-bold text-subtext">보유 정합성</h2>
+        <span id="recStatus" class="text-xs text-subtext"></span>
+      </div>
+      <div id="recIntegrity"></div>
+      <div id="recHoldings" class="space-y-1"></div>
+    </div>
+
     <div id="acctBody" class="space-y-6"></div>
   </section>
 
@@ -1242,7 +1257,7 @@ function go(tab) {
   if (tab === 'auto')      { loadAutoSettings(); pollAuto(); loadBotHoldings(); loadBotStats(); loadGates(); _mcStartCountdown(_mcSavedInterval()); }
   if (tab === 'mock')      loadMockState();
   if (tab === 'scan')      { loadWatchlists($('sFile')); loadQuotes(); }
-  if (tab === 'account')   loadAccount();
+  if (tab === 'account')   { loadAccount(); loadReconcile(); }
   if (tab === 'portfolio') loadPortfolio();
   if (tab === 'logs')      { loadDailyReport(); loadLogRecords(); }
 }
@@ -2844,6 +2859,80 @@ function renderLogRecords(records, total) {
 
 
 // ──────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────
+// Reconciliation panel
+// ──────────────────────────────────────────────────────────
+const REC_KIND = {
+  bot:       { label: '봇 관리',  cls: 'bg-tossblue text-white',
+               hint: '봇이 매수했고 청산 사다리가 관리합니다' },
+  protected: { label: '보호',     cls: 'bg-emerald-50 text-emerald-700',
+               hint: 'protected_tickers — 봇이 매수·매도·손절 전부 하지 않습니다' },
+  manual:    { label: '수동',     cls: 'bg-slate-100 text-subtext',
+               hint: '봇 기록에 없는 보유 — 워치리스트에 넣으면 봇이 거래할 수 있습니다' },
+};
+
+function renderReconcile(d) {
+  if (!d) {
+    $('recStatus').textContent = '조회 실패';
+    $('recIntegrity').innerHTML = '';
+    $('recHoldings').innerHTML = '';
+    return;
+  }
+  $('recStatus').textContent = d.venue_available
+    ? '거래소 대조 완료' : '거래소 응답 없음 — 봇 기록만 표시';
+
+  const ig = d.integrity || {};
+  const rows = [
+    ['계좌 미귀속 주문', ig.legacy_orders],
+    ['결과 불명 주문',   ig.unresolved_orders],
+    ['미추적 조건주문',  ig.orphan_stops],
+  ];
+  $('recIntegrity').innerHTML = rows.map(([label, ids]) => {
+    // null = probe failed. Must not render as a confident zero.
+    if (ids == null) return `<div class="flex items-center gap-2 text-sm text-amber-700">
+      <i class="ph ph-question"></i> ${label}: 확인 실패</div>`;
+    if (!ids.length) return `<div class="flex items-center gap-2 text-sm text-emerald-700">
+      <i class="ph-fill ph-check-circle"></i> ${label} 없음</div>`;
+    return `<div class="flex items-start gap-2 text-sm text-rose-700">
+      <i class="ph-fill ph-warning mt-0.5"></i>
+      <div><span class="font-semibold">${label} ${ids.length}건</span>
+        <div class="text-xs font-mono break-all">${ids.map(escapeHtml).join(', ')}</div></div>
+    </div>`;
+  }).join('');
+
+  const holdings = d.holdings || [];
+  $('recHoldings').innerHTML = holdings.length ? `
+    <div class="border-t border-border pt-3 space-y-1">
+      ${holdings.map(h => {
+        const kind = REC_KIND[h.kind] || REC_KIND.manual;
+        // Show the venue's real quantity; note when the bot's whole-share
+        // model accounts for less than what is actually held.
+        const qty = h.venue_quantity
+          ? (h.fractional ? h.venue_quantity.toFixed(4) : h.venue_quantity) + '주'
+          : '—';
+        const fracNote = h.fractional
+          ? `<span class="text-xs text-subtext" title="봇은 정수 주식만 다룹니다">봇 인식 ${Math.floor(h.venue_quantity)}주</span>`
+          : '';
+        return `<div class="flex items-center justify-between gap-3 py-1">
+          <div class="flex items-center gap-2 min-w-0">
+            <span class="font-bold">${escapeHtml(h.ticker)}</span>
+            <span class="chip ${kind.cls} text-xs" title="${kind.hint}">${kind.label}</span>
+            ${h.mismatch ? `<span class="chip bg-rose-50 text-rose-700 text-xs" title="${escapeHtml(h.mismatch)}">불일치</span>` : ''}
+          </div>
+          <div class="flex items-center gap-3 text-sm shrink-0">
+            ${fracNote}
+            <span class="font-semibold tabular-nums">${qty}</span>
+          </div>
+        </div>${h.mismatch ? `<div class="text-xs text-rose-700 pl-1">${escapeHtml(h.mismatch)}</div>` : ''}`;
+      }).join('')}
+    </div>` : '<div class="text-sm text-subtext border-t border-border pt-3">보유 종목 없음</div>';
+}
+
+async function loadReconcile() {
+  try { renderReconcile(await api('GET', '/api/reconcile?market=US')); }
+  catch (e) { renderReconcile(null); }
+}
+
 // ──────────────────────────────────────────────────────────
 // Gate panel — the live answer to "why isn't it buying?"
 // Mirrors run_auto_iteration's guard order, so the panel explains the

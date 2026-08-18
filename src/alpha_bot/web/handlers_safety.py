@@ -372,3 +372,154 @@ def handle_gates() -> dict[str, Any]:
 
     result["tickers"] = _probe("tickers", tickers, [])
     return result
+
+
+# ── Reconciliation: what the bot believes vs what the venue holds ────
+#
+# Nearly every defect found while taking this bot live lived in that gap —
+# a fractional holding that silently disabled position snapshots, ten
+# ghost orders from a dead broker, conditional orders the queue no longer
+# referenced. The gap was only ever visible by reading code or logs, so it
+# gets a first-class panel.
+#
+# Holdings are classified, not just listed:
+#   bot       — a bot queue row backs it; the exit ladder manages it
+#   protected — config.protected_tickers; the bot must never touch it
+#   manual    — neither. Not an error, but worth seeing: add it to the
+#               watchlist and the bot WOULD trade it.
+
+def handle_reconcile(params: dict[str, str] | None = None) -> dict[str, Any]:
+    params = params or {}
+    config = load_config(CONFIG_PATH)
+    queue = ApprovalQueue(
+        config.approval_queue, protected_tickers=config.protected_tickers
+    )
+    markets = [m for m in (params.get("market", "US"),) if m] or ["US"]
+
+    result: dict[str, Any] = {
+        "broker": config.broker,
+        "protected_tickers": sorted(config.protected_tickers),
+    }
+
+    # ── What the bot believes it holds ──
+    def bot_view() -> dict[str, int]:
+        from alpha_bot.auto.position_manager import remaining_quantity
+        orders = queue.list_orders()
+        by_id = {o.id: o for o in orders}
+        believed: dict[str, int] = {}
+        for order in orders:
+            if order.request.side != "buy":
+                continue
+            if order.status not in {"filled", "partially_filled", "partially_filled_cancelled"}:
+                continue
+            if (order.filled_quantity or 0) <= 0:
+                continue
+            remaining, inflight = remaining_quantity(order, by_id)
+            if remaining <= 0 and not inflight:
+                continue
+            key = order.request.ticker.upper()
+            believed[key] = believed.get(key, 0) + remaining
+        return believed
+
+    believed = _probe("bot_view", bot_view, {})
+    result["bot_believes"] = believed
+
+    def venue_view() -> dict[str, Any]:
+        from alpha_bot.auto.analysis import make_broker
+        broker = make_broker(config.broker)
+
+        # Read raw holdings rather than get_positions(): the bot's model is
+        # whole shares, so DCA fractions (BRK.B 0.22, QLD 0.78) floor to
+        # zero and vanish entirely. An account screen that hides real
+        # holdings is lying, so display keeps the true quantity and marks
+        # what the bot actually accounts for.
+        raw = broker.client.request(  # type: ignore[attr-defined]
+            "GET", "/api/v1/holdings",
+            account_seq=broker.account_seq,  # type: ignore[attr-defined]
+            idempotent=True,
+        )
+        items = (raw.get("result") or {}).get("items") or []
+        out: dict[str, Any] = {}
+        for item in items:
+            if item.get("marketCountry") not in markets:
+                continue
+            symbol = str(item.get("symbol") or "").upper()
+            quantity = float(item.get("quantity") or 0)
+            out[symbol] = {
+                "quantity": quantity,
+                "whole_shares": int(quantity),
+                "fractional": quantity != int(quantity),
+                "avg_price": float(item.get("averagePurchasePrice") or 0),
+                "last_price": float(item.get("lastPrice") or 0),
+                "currency": item.get("currency") or "",
+                "market": item.get("marketCountry"),
+            }
+        return out
+
+    venue = _probe("venue_view", venue_view)
+    # Availability must be tracked separately from emptiness. An account
+    # that legitimately holds nothing is the strongest possible signal
+    # ("the bot thinks it holds F; the venue has nothing"), whereas a
+    # failed probe means we simply cannot tell. Collapsing the two with a
+    # truthiness check silently suppressed the full-external-sell case.
+    venue_available = venue is not None
+    result["venue_available"] = venue_available
+    venue = venue or {}
+
+    # ── Classify + diff ──
+    holdings: list[dict[str, Any]] = []
+    for symbol in sorted(set(venue) | set(believed)):
+        at_venue = venue.get(symbol)
+        bot_qty = believed.get(symbol, 0)
+        if symbol in config.protected_tickers:
+            kind = "protected"
+        elif bot_qty > 0:
+            kind = "bot"
+        else:
+            kind = "manual"
+
+        mismatch: str | None = None
+        if venue_available:
+            if bot_qty > 0 and at_venue is None:
+                mismatch = "봇은 보유로 아는데 거래소에 없음 (외부 매도 추정)"
+            elif bot_qty > 0 and at_venue and at_venue["whole_shares"] < bot_qty:
+                mismatch = (
+                    f"봇 {bot_qty}주 vs 거래소 {at_venue['whole_shares']}주 (부분 외부 매도 추정)"
+                )
+
+        holdings.append({
+            "ticker": symbol,
+            "kind": kind,
+            "bot_quantity": bot_qty,
+            "venue_quantity": at_venue["quantity"] if at_venue else 0,
+            "fractional": bool(at_venue and at_venue["fractional"]),
+            "avg_price": at_venue["avg_price"] if at_venue else None,
+            "last_price": at_venue["last_price"] if at_venue else None,
+            "currency": at_venue["currency"] if at_venue else "",
+            "mismatch": mismatch,
+        })
+    result["holdings"] = holdings
+
+    # ── Order-level integrity ──
+    def integrity() -> dict[str, Any]:
+        from alpha_bot.auto.analysis import make_broker
+        broker = make_broker(config.broker)
+        orphans: list[str] = []
+        lister = getattr(broker, "list_protective_stop_ids", None)
+        if callable(lister):
+            referenced = {
+                o.protective_stop_id for o in queue.list_orders() if o.protective_stop_id
+            }
+            for symbol in {h["ticker"] for h in holdings if h["kind"] == "bot"}:
+                orphans.extend(sorted(set(lister(symbol)) - referenced))
+        return {
+            "legacy_orders": [o.id for o in queue.unscoped_broker_orders(broker)],
+            "unresolved_orders": [o.id for o in queue.unresolved_orders(broker)],
+            "orphan_stops": orphans,
+        }
+
+    result["integrity"] = _probe(
+        "integrity", integrity,
+        {"legacy_orders": None, "unresolved_orders": None, "orphan_stops": None},
+    )
+    return result

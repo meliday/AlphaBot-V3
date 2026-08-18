@@ -13,6 +13,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from alpha_bot.approval import ApprovalQueue
 from alpha_bot.web.handlers_safety import _overall, handle_safety
 
 
@@ -214,6 +215,113 @@ class GateTests(unittest.TestCase):
             self.assertIsNone(us["cash"]["available"])
             # Unknown gates must not read as passed.
             self.assertIn(us["breaker"]["detail"], {"브로커 없음", "확인 실패"})
+
+
+class ReconcileTests(unittest.TestCase):
+    """Bot belief vs venue truth — the gap nearly every live defect hid in."""
+
+    def _reconcile(self, tmp: str, *, venue_items, seed_buy=None, **config_kw):
+        from dataclasses import replace as _replace
+        from alpha_bot.config import AppConfig
+        from alpha_bot.models import OrderRequest
+        from alpha_bot.web import handlers_safety
+
+        config = AppConfig(approval_queue=Path(tmp) / "pending.json", **config_kw)
+        queue = ApprovalQueue(config.approval_queue)
+        if seed_buy:
+            ticker, qty = seed_buy
+            order = queue.enqueue(
+                OrderRequest(ticker, "US", "buy", qty, "limit", 100.0),
+                stop_loss=90.0, target1=120.0, target2=140.0,
+            )
+            queue.update(_replace(
+                order, status="filled", filled_quantity=qty, avg_fill_price=100.0,
+                broker="toss", broker_instance_id="toss:test",
+                broker_account_id="acct", broker_mode="live",
+            ))
+
+        class Client:
+            def request(self, method, path, **kwargs):
+                return {"result": {"items": venue_items}}
+
+        class Broker:
+            name = "toss"
+            client = Client()
+            account_seq = 1
+
+            def list_protective_stop_ids(self, ticker):
+                return []
+
+        with patch("alpha_bot.web.handlers_safety.load_config", return_value=config), \
+             patch("alpha_bot.auto.analysis.make_broker", return_value=Broker()):
+            return handlers_safety.handle_reconcile({"market": "US"})
+
+    def _item(self, symbol, quantity):
+        return {
+            "symbol": symbol, "marketCountry": "US", "quantity": str(quantity),
+            "averagePurchasePrice": "100", "lastPrice": "101", "currency": "USD",
+        }
+
+    def test_holdings_are_classified_not_merely_listed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self._reconcile(
+                tmp,
+                venue_items=[self._item("F", 1), self._item("VOO", 2),
+                             self._item("TSLA", 3)],
+                seed_buy=("F", 1),
+                protected_tickers=frozenset({"VOO"}),
+            )
+            kinds = {h["ticker"]: h["kind"] for h in payload["holdings"]}
+            self.assertEqual(kinds, {"F": "bot", "VOO": "protected", "TSLA": "manual"})
+
+    def test_fractional_holdings_keep_their_real_quantity(self):
+        # The bot's whole-share model floors these to zero; an account
+        # screen that hides real holdings is lying.
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self._reconcile(
+                tmp, venue_items=[self._item("BRK.B", "0.2257")],
+                protected_tickers=frozenset({"BRK.B"}),
+            )
+            row = payload["holdings"][0]
+            self.assertAlmostEqual(row["venue_quantity"], 0.2257)
+            self.assertTrue(row["fractional"])
+
+    def test_a_partial_external_sell_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self._reconcile(
+                tmp, venue_items=[self._item("F", 1)], seed_buy=("F", 5),
+            )
+            row = next(h for h in payload["holdings"] if h["ticker"] == "F")
+            self.assertIn("부분 외부 매도", row["mismatch"])
+
+    def test_a_full_external_sell_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self._reconcile(tmp, venue_items=[], seed_buy=("F", 5))
+            row = next(h for h in payload["holdings"] if h["ticker"] == "F")
+            self.assertIn("거래소에 없음", row["mismatch"])
+
+    def test_matching_quantities_report_no_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self._reconcile(
+                tmp, venue_items=[self._item("F", 1)], seed_buy=("F", 1),
+            )
+            self.assertIsNone(payload["holdings"][0]["mismatch"])
+
+    def test_a_venue_outage_suppresses_diffing_rather_than_crying_wolf(self):
+        # Without venue data every bot position would look externally sold.
+        with tempfile.TemporaryDirectory() as tmp:
+            from alpha_bot.config import AppConfig
+            from alpha_bot.web import handlers_safety
+
+            config = AppConfig(approval_queue=Path(tmp) / "pending.json")
+            with patch("alpha_bot.web.handlers_safety.load_config", return_value=config), \
+                 patch("alpha_bot.auto.analysis.make_broker",
+                       side_effect=RuntimeError("venue down")):
+                payload = handlers_safety.handle_reconcile({"market": "US"})
+
+            self.assertFalse(payload["venue_available"])
+            self.assertTrue(all(h["mismatch"] is None for h in payload["holdings"]))
+            self.assertIsNone(payload["integrity"]["legacy_orders"])
 
 if __name__ == "__main__":
     unittest.main()
