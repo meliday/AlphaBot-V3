@@ -40,6 +40,14 @@ reference. It only warns, never cancels: the venue's list response omits
 ``clientOrderId``, so a bot-orphan is indistinguishable from a stop the
 operator placed by hand in the Toss app, and destroying the operator's
 own protection would be worse than an alert.
+
+Session coverage is asymmetric by venue rule, and both sides are accepted
+deliberately. KR conditionals trigger during the KRX regular session only,
+so this protects against bot downtime, not overnight gaps. US conditionals
+trigger in **every** tradable session — a stop can fire as a market sell
+into a thin 4 a.m. pre-market book. That is kept as-is: in a gap scenario
+it is the only protection that exists, and the alternative (a limit stop)
+fails precisely when it matters most, by gapping through unfilled.
 """
 
 from __future__ import annotations

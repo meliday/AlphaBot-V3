@@ -88,6 +88,15 @@ def run_auto_iteration(
     except Exception as exc:
         logger.warning("Order sync failed: %s", exc)
 
+    # Long-settled order groups leave the hot file; every update() rewrites
+    # it in full, so size is latency and (at O(n²)) an eventual failure mode.
+    try:
+        archived = queue.archive_closed_orders()
+        if archived:
+            say(f"  🗄️ 종결 주문 {archived}건 아카이브 (logs/orders_archive/)")
+    except Exception as exc:
+        logger.warning("Order archiving failed: %s", exc)
+
     legacy = queue.unscoped_broker_orders(broker)
     unresolved = queue.unresolved_orders(broker)
 

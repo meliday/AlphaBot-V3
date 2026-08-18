@@ -449,6 +449,103 @@ class ApprovalQueue:
                 logger.warning("Stale-cancel bookkeeping failed for %s: %s", order.id, exc)
         return cancelled
 
+    def archive_closed_orders(
+        self,
+        *,
+        archive_dir: Path = Path("logs/orders_archive"),
+        min_age_days: int = 7,
+    ) -> int:
+        """Move long-settled order groups out of the live queue file.
+
+        The queue file is re-read and fully rewritten on every ``update()``,
+        so it must stay small — but rows are also the audit trail linking
+        buys to their exits, so nothing may leave while any part of its
+        story is still open. A *group* (one buy plus every sell it
+        references) is archived only when every member is terminal, the
+        buy's confirmed shares are fully accounted for, no protective-stop
+        state is armed or pending, and the group's last activity is older
+        than ``min_age_days``. Unreferenced sells and anything unprovable
+        (missing timestamps) stay put.
+
+        Groups land in ``archive_dir/YYYY-MM.json`` (dedup by id, so a crash
+        between the archive write and the queue rewrite re-archives rather
+        than loses). Returns the number of rows moved.
+        """
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=min_age_days)
+        terminal_sell = {"filled", "cancelled", "rejected", "partially_filled_cancelled"}
+
+        def last_activity(order: OrderCandidate) -> datetime | None:
+            for stamp in (order.last_synced_at, order.submitted_at, order.created_at):
+                if not stamp:
+                    continue
+                try:
+                    parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+            return None
+
+        moved: list[OrderCandidate] = []
+        with self._orders_transaction() as orders:
+            by_id = {o.id: o for o in orders}
+            archive_ids: set[str] = set()
+            for buy in orders:
+                if buy.request.side != "buy":
+                    continue
+                if buy.protective_stop_id or buy.protective_stop_quantity > 0:
+                    continue  # venue stop armed or unresolved — story not over
+                linked_ids = [*buy.partial_exit_ids]
+                if buy.exit_order_id:
+                    linked_ids.append(buy.exit_order_id)
+                linked = [by_id[i] for i in linked_ids if i in by_id]
+
+                if buy.status in {"rejected", "cancelled"} and buy.filled_quantity == 0:
+                    closed = not linked  # a dead intent with no exits attached
+                elif buy.status in {"filled", "partially_filled", "partially_filled_cancelled"}:
+                    closed = (
+                        _confirmed_remaining_quantity(buy, by_id) == 0
+                        and not _linked_sell_is_working(buy, by_id)
+                        and all(sell.status in terminal_sell for sell in linked)
+                    )
+                else:
+                    closed = False
+                if not closed:
+                    continue
+
+                group = [buy, *linked]
+                stamps = [last_activity(o) for o in group]
+                if any(t is None for t in stamps):
+                    continue  # cannot prove age — keep
+                if max(stamps) >= cutoff:
+                    continue  # settled too recently
+                archive_ids.update(o.id for o in group)
+
+            if not archive_ids:
+                return 0
+            moved = [o for o in orders if o.id in archive_ids]
+
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            target = archive_dir / f"{datetime.now(timezone.utc):%Y-%m}.json"
+            existing: list[dict] = []
+            if target.exists():
+                try:
+                    existing = json.loads(target.read_text(encoding="utf-8")).get("orders", [])
+                except Exception:
+                    logger.warning("Unreadable archive %s — starting a fresh list", target)
+            known = {str(row.get("id")) for row in existing}
+            existing.extend(o.to_dict() for o in moved if o.id not in known)
+            tmp = target.with_suffix(target.suffix + ".tmp")
+            tmp.write_text(
+                json.dumps({"orders": existing}, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            os.replace(tmp, target)
+
+            orders[:] = [o for o in orders if o.id not in archive_ids]
+        logger.info("Archived %d settled order rows to %s", len(moved), archive_dir)
+        return len(moved)
+
     def update(self, order: OrderCandidate) -> None:
         """Persist a single in-memory ``OrderCandidate`` back to disk."""
         with self._orders_transaction() as orders:
