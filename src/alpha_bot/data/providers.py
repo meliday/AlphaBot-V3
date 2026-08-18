@@ -399,6 +399,7 @@ class TossPriceDataProvider:
         resolved = settings or TossSettings.from_env()
         self.client = client or TossRestClient(resolved)
         self.fallback = fallback
+        self._data_dir = getattr(fallback, "data_dir", Path("data"))
 
     def get_candles(
         self, ticker: str, market: Market, lookback: int = 260
@@ -484,6 +485,26 @@ class TossPriceDataProvider:
     def get_fundamentals(
         self, ticker: str, market: Market
     ) -> list[FundamentalsQuarter]:
+        """Resolve through the multi-source chain, not just local fixtures.
+
+        Toss has no fundamentals endpoint, and delegating straight to the
+        fixture fallback meant any ticker without a hand-made JSON file
+        scored 0/10 — "평가 불가" — which caps the 30-point total at 20 and
+        puts min_score out of reach. Four of five watchlist names were in
+        that state. The chain (yfinance → SEC EDGAR → fixtures for US,
+        Naver → KIS → fixtures for KR) never raises and falls back to the
+        same fixtures as before when every source is silent.
+        """
+
+        from alpha_bot.data.fundamentals_sources import resolve_fundamentals
+
+        result = resolve_fundamentals(ticker, market, data_dir=self._data_dir)
+        if result.ok:
+            logger.info(
+                "Fundamentals for %s:%s from %s (%d quarters)",
+                market, ticker, result.source, len(result.quarters),
+            )
+            return result.quarters
         return self.fallback.get_fundamentals(ticker, market) if self.fallback else []
 
     def get_catalysts(self, ticker: str, market: Market) -> list[Catalyst]:
