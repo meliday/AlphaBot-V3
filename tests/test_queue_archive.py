@@ -130,3 +130,32 @@ class ArchiveTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UnreferencedSellTests(unittest.TestCase):
+    def test_inert_rejected_sells_archive_but_filled_ones_stay(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            queue = ApprovalQueue(Path(tmp) / "pending.json")
+            arch = Path(tmp) / "arch"
+            seed(
+                queue,
+                sell_row("S1", "SNDK", status="rejected", filled=0),   # inert spam
+                sell_row("S2", "SNDK", status="filled", filled=10),    # unreferenced but real
+                sell_row("S3", "SNDK", status="rejected", filled=0, age_days=1),  # too fresh
+            )
+            self.assertEqual(queue.archive_closed_orders(archive_dir=arch), 1)
+            remaining = {o.id for o in queue.list_orders()}
+            self.assertEqual(remaining, {"S2", "S3"})
+
+    def test_a_referenced_rejected_sell_stays_with_its_buy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            queue = ApprovalQueue(Path(tmp) / "pending.json")
+            arch = Path(tmp) / "arch"
+            # Open position whose exit attempt was rejected — the story is
+            # still live; neither row may leave.
+            seed(
+                queue,
+                buy_row("B1", "NVDA", exit_id="S1"),
+                sell_row("S1", "NVDA", status="rejected", filled=0),
+            )
+            self.assertEqual(queue.archive_closed_orders(archive_dir=arch), 0)

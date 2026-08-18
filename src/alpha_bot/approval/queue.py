@@ -489,9 +489,28 @@ class ApprovalQueue:
         moved: list[OrderCandidate] = []
         with self._orders_transaction() as orders:
             by_id = {o.id: o for o in orders}
+            referenced_sells: set[str] = set()
+            for o in orders:
+                if o.request.side == "buy":
+                    referenced_sells.update(o.partial_exit_ids)
+                    if o.exit_order_id:
+                        referenced_sells.add(o.exit_order_id)
             archive_ids: set[str] = set()
             for buy in orders:
                 if buy.request.side != "buy":
+                    # Unreferenced sells normally stay (they may be half of a
+                    # story we cannot see) — but a terminal sell with zero
+                    # fills that no buy links to is provably inert: it cannot
+                    # enter remaining-quantity math and blocks nothing. The
+                    # May-era rejected-sell spam left 36 such rows.
+                    if (
+                        buy.status in {"rejected", "cancelled"}
+                        and (buy.filled_quantity or 0) == 0
+                        and buy.id not in referenced_sells
+                    ):
+                        stamp = last_activity(buy)
+                        if stamp is not None and stamp < cutoff:
+                            archive_ids.add(buy.id)
                     continue
                 if buy.protective_stop_id or buy.protective_stop_quantity > 0:
                     continue  # venue stop armed or unresolved — story not over

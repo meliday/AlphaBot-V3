@@ -63,6 +63,8 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--universe", required=True)
     scan.add_argument("--data-dir")
     scan.add_argument("--demo", action="store_true")
+    scan.add_argument("--kis-data", action="store_true", help="Use KIS REST for daily prices")
+    scan.add_argument("--toss-data", action="store_true", help="Use Toss REST for daily prices")
     scan.add_argument("--language", default="ko")
     scan.set_defaults(func=cmd_scan)
 
@@ -496,6 +498,11 @@ def _portfolio_backtest(args: argparse.Namespace, config, provider) -> int:
 
 
 def _provider(args: argparse.Namespace, default_data_dir: Path):
+    # Not every subcommand defines the source flags; treat absence as False
+    # instead of crashing (bot scan shipped without them and broke outright).
+    for flag in ("kis_data", "toss_data", "demo"):
+        if not hasattr(args, flag):
+            setattr(args, flag, False)
     if args.kis_data and args.toss_data:
         raise ValueError("Choose only one market-data source: --kis-data or --toss-data.")
     if args.demo:
