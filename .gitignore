@@ -20,6 +20,7 @@ pending_orders.json
 pending_orders.json.tmp
 pending_orders.json.lock
 pending_orders.backup-*.json
+testcases/.stop_fire_state.json
 mock_orders.json
 mock_orders.json.tmp
 mock_state.json

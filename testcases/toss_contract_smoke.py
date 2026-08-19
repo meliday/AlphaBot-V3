@@ -259,7 +259,19 @@ def main() -> int:
           f"{sum(1 for s, *_ in RESULTS if s == 'SKIP')} skipped "
           f"@ {datetime.now(timezone.utc).isoformat(timespec='seconds')}")
     if fails:
-        print("→ FAIL 항목의 파서 가정이 실서버와 다릅니다. 해당 코드부터 고치세요.")
+        # "our parser disagrees with the venue" and "the venue refused to
+        # talk to us" produce the same red, and only one of them is fixed
+        # by editing code. Sending someone into the parser over an IP
+        # allowlist wastes the part of the day the market is open.
+        blob = " ".join(detail for _, _, detail in RESULTS)
+        if "ip-not-allowed" in blob:
+            print("→ 파서 문제가 아닙니다. 토스가 이 IP를 거부했습니다 (ip-not-allowed).")
+            print("  개발자센터 > 애플리케이션 > 허용 IP 에 현재 IP를 등록하세요.")
+            print("  현재 IP:  curl -s https://api.ipify.org")
+        elif "401" in blob or "unauthorized" in blob.lower():
+            print("→ 파서 문제가 아닙니다. 자격증명이 거부됐습니다 — TOSS_CLIENT_ID/SECRET 확인.")
+        else:
+            print("→ FAIL 항목의 파서 가정이 실서버와 다릅니다. 해당 코드부터 고치세요.")
     else:
         print("→ 파서 가정이 실서버와 일치합니다. 다음 단계: 1주 지정가 수동 매수/취소.")
     return 1 if fails else 0
