@@ -92,6 +92,13 @@ def handle_safety() -> dict[str, Any]:
 
     result["heartbeats"] = _probe("heartbeats", heartbeats, {})
 
+    def notifications() -> dict[str, Any]:
+        from alpha_bot.notify import is_configured
+
+        return {"configured": is_configured()}
+
+    result["notifications"] = _probe("notifications", notifications, {})
+
     # ── Queue-derived state (no broker needed) ──
     def positions() -> dict[str, Any]:
         from alpha_bot.auto.position_manager import remaining_quantity
@@ -225,6 +232,16 @@ def _overall(state: dict[str, Any]) -> dict[str, Any]:
             warn.append(f"조건주문 결과 미확인 {positions['pending_intent']}건")
 
     from alpha_bot.auto.watchdog import ALARMING_STATES
+
+    # An unattended bot that cannot reach anyone is the case worth naming:
+    # alerts exist for the hours nobody is watching the screen. Flagged
+    # only while auto is actually up — a permanently amber bar for someone
+    # who simply never wanted Telegram is the same false alarm this bar
+    # was just taught not to raise.
+    auto_state = ((state.get("heartbeats") or {}).get("auto") or {}).get("state")
+    notifications = state.get("notifications") or {}
+    if auto_state == "ok" and notifications.get("configured") is False:
+        warn.append("알림 채널 미설정 (무인 가동 중 알림 불가)")
 
     for component, health in (state.get("heartbeats") or {}).items():
         # Stopping the bot is a decision, not a fault, and a component that

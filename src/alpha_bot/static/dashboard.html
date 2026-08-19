@@ -1199,6 +1199,29 @@
       </div>
     </div>
 
+    <div class="card space-y-4">
+      <div class="flex items-center justify-between gap-3">
+        <h3 class="font-extrabold text-lg">알림 · Telegram</h3>
+        <span id="notifyStatus" class="chip bg-dim text-subtext">확인 중…</span>
+      </div>
+      <p class="text-xs text-subtext">
+        매수 접수·청산·강제청산·손실 브레이커·킬스위치를 알립니다. 비워두면 조용히 동작하지 않습니다 —
+        <b>봇을 지켜보지 않고 돌릴 계획이라면 반드시 채워두세요.</b>
+        토큰은 <a class="text-tossblue font-semibold" href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a>에서 발급하고,
+        chat id는 봇에게 아무 메시지나 보낸 뒤 <code>getUpdates</code>로 확인합니다.
+      </p>
+      <div class="grid md:grid-cols-2 gap-3">
+        <label class="flex flex-col gap-1 text-sm">
+          <span class="text-subtext text-xs px-1">TELEGRAM_BOT_TOKEN</span>
+          <input id="envTELEGRAM_BOT_TOKEN" placeholder="123456:ABC..." class="input rounded-toss-sm px-3 py-2 font-mono text-sm" />
+        </label>
+        <label class="flex flex-col gap-1 text-sm">
+          <span class="text-subtext text-xs px-1">TELEGRAM_CHAT_ID</span>
+          <input id="envTELEGRAM_CHAT_ID" placeholder="987654321" class="input rounded-toss-sm px-3 py-2 font-mono text-sm" />
+        </label>
+      </div>
+    </div>
+
     <button id="saveSettings" class="btn btn-primary w-full"><i class="ph-bold ph-floppy-disk"></i> 설정 저장</button>
   </section>
 
@@ -2635,7 +2658,8 @@ $('acctBroker').onchange = loadAccount;
 const SETTINGS_ENV_KEYS = [
   'TOSS_CLIENT_ID','TOSS_CLIENT_SECRET','TOSS_ACCOUNT_SEQ','TOSS_ENABLE_LIVE_ORDERS',
   'KIS_MODE','KIS_APP_KEY','KIS_APP_SECRET','KIS_ACCOUNT_NO','KIS_ACCOUNT_PRODUCT','KIS_HTS_ID',
-  'OPENAI_API_KEY','OPENAI_MODEL'
+  'OPENAI_API_KEY','OPENAI_MODEL',
+  'TELEGRAM_BOT_TOKEN','TELEGRAM_CHAT_ID'
 ];
 
 async function loadSettings() {
@@ -2661,6 +2685,16 @@ async function loadSettings() {
       const el = $('env' + k);
       if (el) el.value = env[k] || (k === 'TOSS_ENABLE_LIVE_ORDERS' ? 'false' : '');
     });
+
+    // Both halves are required — a token with no chat id sends nowhere,
+    // and the module is a silent no-op about it. Say so here rather than
+    // letting the operator infer it from alerts that never arrive.
+    const notifyOn = !!(env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID);
+    const chip = $('notifyStatus');
+    chip.className = 'chip ' + (notifyOn ? 'bg-goodSoft text-good' : 'bg-warnSoft text-warn');
+    chip.innerHTML = notifyOn
+      ? '<i class="ph-fill ph-check-circle"></i> 알림 켜짐'
+      : '<i class="ph-fill ph-warning"></i> 알림 꺼짐';
   } catch (e) {
     toast('설정 불러오기 실패: ' + e.message, 'error');
   }

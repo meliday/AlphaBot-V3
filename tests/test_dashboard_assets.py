@@ -40,9 +40,21 @@ class DashboardAssetsTest(unittest.TestCase):
 
         It is the screen you open when something has gone wrong, which is
         exactly when a third-party CDN is the worst thing to depend on.
+
+        Scoped to what the page *fetches* to render itself. An <a href> is
+        a place the operator may choose to go, not a dependency: it costs
+        nothing when the network is gone, so linking out to a doc or a
+        token issuer stays allowed.
         """
-        external = re.findall(r'(?:src|href)="(https?://[^"]+)"', self.html)
-        self.assertEqual(external, [], f"dashboard.html reaches outside: {external}")
+        external = [
+            *re.findall(
+                r'<(?:script|img|iframe|source|video|audio|embed)\b[^>]*\bsrc="(https?://[^"]+)"',
+                self.html,
+            ),
+            *re.findall(r'<link\b[^>]*\bhref="(https?://[^"]+)"', self.html),
+            *re.findall(r"url\(\s*['\"]?(https?://[^)'\"]+)", self.html),
+        ]
+        self.assertEqual(external, [], f"dashboard.html fetches from outside: {external}")
 
     def test_every_icon_has_a_glyph(self) -> None:
         """Subsetting keeps only the glyphs in use — so 'in use' must be right.

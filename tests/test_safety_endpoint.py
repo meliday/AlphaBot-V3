@@ -22,6 +22,7 @@ def state(**overrides) -> dict:
         "protective_stop_enabled": False,
         "kill_switch": {"active": False, "reason": ""},
         "heartbeats": {},
+        "notifications": {"configured": True},
         "positions": {"held": [], "count": 0, "armed": 0, "pending_intent": 0},
         "broker_state": {
             "legacy_orders": 0, "unresolved_orders": 0,
@@ -100,6 +101,36 @@ class VerdictTests(unittest.TestCase):
                 "auto": {"healthy": False, "state": hb_state, "detail": hb_state}
             }))
             self.assertEqual(verdict["level"], "warn", hb_state)
+
+    def test_no_alert_channel_warns_only_while_the_bot_is_up(self):
+        """Alerts matter for the hours nobody is watching the screen.
+
+        So the missing channel is news exactly when auto is running and
+        nothing can reach the operator — and is not news the rest of the
+        time, because a bar left permanently amber for someone who never
+        wanted Telegram teaches the same lesson as a false alarm.
+        """
+        running = {"auto": {"healthy": True, "state": "ok", "detail": "ok"}}
+        stopped = {"auto": {"healthy": False, "state": "stopped", "detail": "s"}}
+        off = {"configured": False}
+
+        verdict = _overall(state(heartbeats=running, notifications=off))
+        self.assertEqual(verdict["level"], "warn")
+        self.assertIn("알림 채널 미설정 (무인 가동 중 알림 불가)", verdict["reasons"])
+
+        self.assertEqual(
+            _overall(state(heartbeats=stopped, notifications=off))["level"], "info"
+        )
+        self.assertEqual(
+            _overall(state(heartbeats=running, notifications={"configured": True}))["level"],
+            "ok",
+        )
+
+    def test_an_unreadable_notification_probe_does_not_invent_a_warning(self):
+        """A probe that could not answer must not read as 'misconfigured'."""
+        running = {"auto": {"healthy": True, "state": "ok", "detail": "ok"}}
+        verdict = _overall(state(heartbeats=running, notifications={}))
+        self.assertEqual(verdict["level"], "ok")
 
     def test_halted_reasons_include_warnings_too(self):
         verdict = _overall(state(

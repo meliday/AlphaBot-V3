@@ -219,6 +219,7 @@ def handle_save_settings(body: dict[str, Any]) -> dict[str, Any] | tuple[str, in
         "TOSS_CLIENT_ID", "TOSS_CLIENT_SECRET", "TOSS_ACCOUNT_SEQ",
         "TOSS_ENABLE_LIVE_ORDERS", "TOSS_TOKEN_CACHE",
         "BOT_APPROVAL_QUEUE", "OPENAI_API_KEY", "OPENAI_MODEL",
+        "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
     }
     updates = {k: str(v) for k, v in env.items() if k in allowed}
     updates = {k: v for k, v in updates.items() if "***" not in v}

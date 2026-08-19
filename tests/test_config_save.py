@@ -144,3 +144,47 @@ class SerialiserTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EnvSaveTests(unittest.TestCase):
+    """.env write path — the alert channel has to be settable from the UI.
+
+    Leaving it to hand-editing is how a bot ends up running unattended
+    with nothing able to reach its operator.
+    """
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = Path(tmp.name) / ".env"
+        self.path.write_text("# creds\nTOSS_CLIENT_ID=abc\n", encoding="utf-8")
+        patcher = patch.object(handlers_config, "ENV_PATH", self.path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_telegram_credentials_round_trip(self):
+        result = handlers_config.handle_save_settings(
+            {"env": {"TELEGRAM_BOT_TOKEN": "123:ABC", "TELEGRAM_CHAT_ID": "987"}}
+        )
+        self.assertEqual(sorted(result["saved"]), ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"])
+        text = self.path.read_text(encoding="utf-8")
+        self.assertIn("TELEGRAM_BOT_TOKEN=123:ABC", text)
+        self.assertIn("TELEGRAM_CHAT_ID=987", text)
+        self.assertIn("TOSS_CLIENT_ID=abc", text)
+
+    def test_the_masked_placeholder_never_overwrites_a_real_token(self):
+        """Re-saving the settings form must not write back "123***"."""
+        handlers_config.handle_save_settings({"env": {"TELEGRAM_BOT_TOKEN": "123:ABC"}})
+        handlers_config.handle_save_settings({"env": {"TELEGRAM_BOT_TOKEN": "123:***"}})
+        self.assertIn("TELEGRAM_BOT_TOKEN=123:ABC", self.path.read_text(encoding="utf-8"))
+
+    def test_the_token_reads_back_masked(self):
+        handlers_config.handle_save_settings({"env": {"TELEGRAM_BOT_TOKEN": "123:ABCDEF"}})
+        env = handlers_config._read_env_safe()
+        self.assertTrue(env["TELEGRAM_BOT_TOKEN"].endswith("***"))
+        self.assertNotIn("ABCDEF", env["TELEGRAM_BOT_TOKEN"])
+
+    def test_an_unlisted_env_key_is_ignored(self):
+        result = handlers_config.handle_save_settings({"env": {"PATH": "/tmp/evil"}})
+        self.assertEqual(result["saved"], [])
+        self.assertNotIn("PATH=", self.path.read_text(encoding="utf-8"))
